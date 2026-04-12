@@ -1,71 +1,43 @@
-import * as Loader from "../elements/loader";
+import { showLoaderBar, hideLoaderBar } from "../states/loader-bar";
 import * as Misc from "../utils/misc";
-import { Section } from "../utils/misc";
+import * as Strings from "../utils/strings";
+import * as JSONData from "../utils/json-data";
+import { z } from "zod";
+import { parseWithSchema as parseJsonWithSchema } from "@monkeytype/util/json";
+import { Language } from "@monkeytype/schemas/languages";
 
-export async function getTLD(
-  languageGroup: MonkeyTypes.LanguageGroup
-): Promise<"en" | "es" | "fr" | "de" | "pt" | "it" | "nl" | "pl"> {
-  // language group to tld
-  switch (languageGroup.name) {
-    case "english":
-      return "en";
-
-    case "spanish":
-      return "es";
-
-    case "french":
-      return "fr";
-
-    case "german":
-      return "de";
-
-    case "portuguese":
-      return "pt";
-
-    case "italian":
-      return "it";
-
-    case "dutch":
-      return "nl";
-
-    case "polish":
-      return "pl";
-
-    default:
-      return "en";
-  }
-}
-
-interface Post {
+type Post = {
   title: string;
   author: string;
   pageid: number;
-}
+};
 
-interface SectionObject {
+type SectionObject = {
   title: string;
   author: string;
-}
+};
 
-export async function getSection(language: string): Promise<Section> {
+// Section Schema
+const SectionSchema = z.object({
+  query: z.object({
+    pages: z.record(
+      z.string(),
+      z.object({
+        extract: z.string(),
+      }),
+    ),
+  }),
+});
+
+export async function getSection(
+  language: Language,
+): Promise<JSONData.Section> {
   // console.log("Getting section");
-  Loader.show();
+  showLoaderBar();
 
   // get TLD for wikipedia according to language group
-  let urlTLD = "en";
-
-  let currentLanguageGroup: MonkeyTypes.LanguageGroup | undefined;
-  try {
-    currentLanguageGroup = await Misc.findCurrentGroup(language);
-  } catch (e) {
-    console.error(
-      Misc.createErrorMessage(e, "Failed to find current language group")
-    );
-  }
-
-  if (currentLanguageGroup !== undefined) {
-    urlTLD = await getTLD(currentLanguageGroup);
-  }
+  const languageProperties = await JSONData.getLanguage(language);
+  const urlTLD = languageProperties.bcp47?.split("-")[0] ?? "en";
 
   const randomPostURL = `https://${urlTLD}.wikipedia.org/api/rest_v1/page/random/summary`;
   const sectionObj: SectionObject = { title: "", author: "" };
@@ -73,7 +45,7 @@ export async function getSection(language: string): Promise<Section> {
   let pageid = 0;
 
   if (randomPostReq.status === 200) {
-    const postObj: Post = await randomPostReq.json();
+    const postObj = (await randomPostReq.json()) as Post;
     sectionObj.title = postObj.title;
     sectionObj.author = postObj.author;
     pageid = postObj.pageid;
@@ -81,18 +53,26 @@ export async function getSection(language: string): Promise<Section> {
 
   return new Promise((res, rej) => {
     if (randomPostReq.status !== 200) {
-      Loader.hide();
+      hideLoaderBar();
       rej(randomPostReq.status);
     }
-
     const sectionURL = `https://${urlTLD}.wikipedia.org/w/api.php?action=query&format=json&pageids=${pageid}&prop=extracts&exintro=true&origin=*`;
 
     const sectionReq = new XMLHttpRequest();
     sectionReq.onload = (): void => {
       if (sectionReq.readyState === 4) {
         if (sectionReq.status === 200) {
-          let sectionText: string = JSON.parse(sectionReq.responseText).query
-            .pages[pageid.toString()].extract;
+          const parsedResponse = parseJsonWithSchema(
+            sectionReq.responseText,
+            SectionSchema,
+          );
+          const page = parsedResponse.query.pages[pageid.toString()];
+          if (!page) {
+            hideLoaderBar();
+            rej("Page not found");
+            return;
+          }
+          let sectionText = page.extract;
 
           // Converting to one paragraph
           sectionText = sectionText.replace(/<\/p><p>+/g, " ");
@@ -107,7 +87,7 @@ export async function getSection(language: string): Promise<Section> {
           sectionText = sectionText.replace(/[\u200B-\u200D\uFEFF]/g, "");
 
           // replace any fancy symbols
-          sectionText = Misc.cleanTypographySymbols(sectionText);
+          sectionText = Strings.cleanTypographySymbols(sectionText);
 
           // Remove non-ascii characters for English articles
           if (urlTLD === "en") {
@@ -122,15 +102,15 @@ export async function getSection(language: string): Promise<Section> {
 
           const words = sectionText.split(" ");
 
-          const section = new Section(
+          const section = new JSONData.Section(
             sectionObj.title,
             sectionObj.author,
-            words
+            words,
           );
-          Loader.hide();
+          hideLoaderBar();
           res(section);
         } else {
-          Loader.hide();
+          hideLoaderBar();
           rej(sectionReq.status);
         }
       }

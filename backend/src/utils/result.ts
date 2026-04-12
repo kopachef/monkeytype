@@ -1,14 +1,28 @@
+import {
+  ChartData,
+  CompletedEvent,
+  OldChartData,
+  Result,
+} from "@monkeytype/schemas/results";
+import { Mode } from "@monkeytype/schemas/shared";
 import { ObjectId } from "mongodb";
+import { WithObjectId } from "./misc";
+import { FunboxName } from "@monkeytype/schemas/configs";
 
-type Result = SharedTypes.DBResult<SharedTypes.Mode>;
+export type DBResult = WithObjectId<Result<Mode>> & {
+  //legacy values
+  correctChars?: number;
+  incorrectChars?: number;
+  chartData: ChartData | OldChartData | "toolong";
+};
 
 export function buildDbResult(
-  completedEvent: SharedTypes.CompletedEvent,
+  completedEvent: CompletedEvent,
   userName: string,
-  isPb: boolean
-): Result {
+  isPb: boolean,
+): DBResult {
   const ce = completedEvent;
-  const res: Result = {
+  const res: DBResult = {
     _id: new ObjectId(),
     uid: ce.uid,
     wpm: ce.wpm,
@@ -33,31 +47,80 @@ export function buildDbResult(
     funbox: ce.funbox,
     numbers: ce.numbers,
     punctuation: ce.punctuation,
-    keySpacingStats: ce.keySpacingStats,
-    keyDurationStats: ce.keyDurationStats,
     isPb: isPb,
     bailedOut: ce.bailedOut,
     blindMode: ce.blindMode,
     name: userName,
   };
 
-  if (ce.bailedOut === false) delete res.bailedOut;
-  if (ce.blindMode === false) delete res.blindMode;
-  if (ce.lazyMode === false) delete res.lazyMode;
+  //compress object by omitting default values. Frontend will add them back after reading
+  //reduces object size on the database and on the rest api
+  if (!ce.bailedOut) delete res.bailedOut;
+  if (!ce.blindMode) delete res.blindMode;
+  if (!ce.lazyMode) delete res.lazyMode;
   if (ce.difficulty === "normal") delete res.difficulty;
-  if (ce.funbox === "none") delete res.funbox;
+  if (ce.funbox.length === 0) delete res.funbox;
   if (ce.language === "english") delete res.language;
-  if (ce.numbers === false) delete res.numbers;
-  if (ce.punctuation === false) delete res.punctuation;
-  if (ce.mode !== "custom") delete res.customText;
+  if (!ce.numbers) delete res.numbers;
+  if (!ce.punctuation) delete res.punctuation;
   if (ce.mode !== "quote") delete res.quoteLength;
   if (ce.restartCount === 0) delete res.restartCount;
   if (ce.incompleteTestSeconds === 0) delete res.incompleteTestSeconds;
   if (ce.afkDuration === 0) delete res.afkDuration;
   if (ce.tags.length === 0) delete res.tags;
-
-  if (ce.keySpacingStats === undefined) delete res.keySpacingStats;
-  if (ce.keyDurationStats === undefined) delete res.keyDurationStats;
+  if (res.isPb === false) delete res.isPb;
 
   return res;
+}
+
+/**
+ * Convert legacy values
+ * @param result
+ * @returns
+ */
+export function replaceLegacyValues(result: DBResult): DBResult {
+  //convert legacy values
+  if (
+    result.correctChars !== undefined &&
+    result.incorrectChars !== undefined
+  ) {
+    //super edge case but just in case
+    if (result.charStats !== undefined) {
+      result.charStats = [
+        result.charStats[0],
+        result.charStats[1],
+        result.charStats[2],
+        result.charStats[3],
+      ];
+      delete result.correctChars;
+      delete result.incorrectChars;
+    } else {
+      result.charStats = [result.correctChars, result.incorrectChars, 0, 0];
+      delete result.correctChars;
+      delete result.incorrectChars;
+    }
+  }
+
+  if (typeof result.funbox === "string") {
+    if (result.funbox === "none") {
+      result.funbox = [];
+    } else {
+      result.funbox = (result.funbox as string).split("#") as FunboxName[];
+    }
+  }
+
+  if (
+    result.chartData !== undefined &&
+    result.chartData !== "toolong" &&
+    "raw" in result.chartData
+  ) {
+    const temp = result.chartData;
+    result.chartData = {
+      wpm: temp.wpm,
+      burst: temp.raw,
+      err: temp.err,
+    };
+  }
+
+  return result;
 }

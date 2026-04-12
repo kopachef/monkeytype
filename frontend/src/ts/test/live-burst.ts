@@ -1,76 +1,85 @@
-import Config from "../config";
+import { Config } from "../config/store";
 import * as TestState from "../test/test-state";
-import * as ConfigEvent from "../observables/config-event";
-import { get as getTypingSpeedUnit } from "../utils/typing-speed-units";
+import { configEvent } from "../events/config";
+import Format from "../singletons/format";
+import { applyReducedMotion } from "../utils/misc";
+import { requestDebouncedAnimationFrame } from "../utils/debounced-animation-frame";
+import { qs } from "../utils/dom";
+
+const textEl = qs("#liveStatsTextBottom .liveBurst");
+const miniEl = qs("#liveStatsMini .burst");
+
+export function reset(): void {
+  requestDebouncedAnimationFrame("live-burst.reset", () => {
+    textEl?.setHtml("0");
+    miniEl?.setHtml("0");
+  });
+}
 
 export async function update(burst: number): Promise<void> {
-  if (!Config.showLiveBurst) return;
-  burst = Math.round(getTypingSpeedUnit(Config.typingSpeedUnit).fromWpm(burst));
-  (document.querySelector("#miniTimerAndLiveWpm .burst") as Element).innerHTML =
-    burst.toString();
-  (document.querySelector("#liveBurst") as Element).innerHTML =
-    burst.toString();
+  requestDebouncedAnimationFrame("live-burst.update", () => {
+    const burstText = Format.typingSpeed(burst, { showDecimalPlaces: false });
+    miniEl?.setHtml(burstText);
+    textEl?.setHtml(burstText);
+  });
 }
 
 let state = false;
 
 export function show(): void {
-  if (!Config.showLiveBurst) return;
+  if (Config.liveBurstStyle === "off") return;
   if (!TestState.isActive) return;
   if (state) return;
-  if (Config.timerStyle === "mini") {
-    $("#miniTimerAndLiveWpm .burst")
-      .stop(true, false)
-      .removeClass("hidden")
-      .css("opacity", 0)
-      .animate(
-        {
-          opacity: Config.timerOpacity,
-        },
-        125
-      );
-  } else {
-    $("#liveBurst")
-      .stop(true, false)
-      .removeClass("hidden")
-      .css("opacity", 0)
-      .animate(
-        {
-          opacity: Config.timerOpacity,
-        },
-        125
-      );
-  }
-  state = true;
+  requestDebouncedAnimationFrame("live-burst.show", () => {
+    if (Config.liveBurstStyle === "mini") {
+      miniEl?.show();
+      miniEl?.animate({
+        opacity: [0, 1],
+        duration: applyReducedMotion(125),
+      });
+    } else {
+      textEl?.show();
+      textEl?.animate({
+        opacity: [0, 1],
+        duration: applyReducedMotion(125),
+      });
+    }
+    state = true;
+  });
 }
 
 export function hide(): void {
   if (!state) return;
-  $("#liveBurst")
-    .stop(true, false)
-    .animate(
-      {
-        opacity: 0,
+  requestDebouncedAnimationFrame("live-burst.hide", () => {
+    textEl?.animate({
+      opacity: [1, 0],
+      duration: applyReducedMotion(125),
+      onComplete: () => {
+        textEl?.hide();
       },
-      125,
-      () => {
-        $("#liveBurst").addClass("hidden");
-      }
-    );
-  $("#miniTimerAndLiveWpm .burst")
-    .stop(true, false)
-    .animate(
-      {
-        opacity: 0,
+    });
+    miniEl?.animate({
+      opacity: [1, 0],
+      duration: applyReducedMotion(125),
+      onComplete: () => {
+        miniEl?.hide();
       },
-      125,
-      () => {
-        $("#miniTimerAndLiveWpm .burst").addClass("hidden");
-      }
-    );
+    });
+    state = false;
+  });
+}
+
+export function instantHide(): void {
+  if (!state) return;
+
+  textEl?.hide();
+  textEl?.setStyle({ opacity: "0" });
+  miniEl?.hide();
+  miniEl?.setStyle({ opacity: "0" });
+
   state = false;
 }
 
-ConfigEvent.subscribe((eventKey, eventValue) => {
-  if (eventKey === "showLiveBurst") eventValue ? show() : hide();
+configEvent.subscribe(({ key, newValue }) => {
+  if (key === "liveBurstStyle") newValue === "off" ? hide() : show();
 });

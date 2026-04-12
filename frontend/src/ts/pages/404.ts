@@ -1,22 +1,19 @@
 import Page from "./page";
-import * as Skeleton from "../popups/skeleton";
+import * as Skeleton from "../utils/skeleton";
+import { onDOMReady, qsr } from "../utils/dom";
 
-export const page = new Page(
-  "404",
-  $(".page.page404"),
-  "/404",
-  async () => {
-    //
-  },
-  async () => {
+export const page = new Page({
+  id: "404",
+  element: qsr(".page.page404"),
+  path: "/404",
+  afterHide: async (): Promise<void> => {
     Skeleton.remove("page404");
   },
-  async () => {
+  beforeShow: async (): Promise<void> => {
     Skeleton.append("page404", "main");
   },
-  async () => {
-    //
-  }
-);
+});
 
-Skeleton.save("page404");
+onDOMReady(() => {
+  Skeleton.save("page404");
+});

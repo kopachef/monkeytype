@@ -1,7 +1,6 @@
-import axios from "axios";
-import { Section } from "../utils/misc";
+import { Section } from "../utils/json-data";
 
-const bannedChars = ["—", "_", " "];
+const bannedChars = new Set(["—", "_", " "]);
 const maxWords = 100;
 const apiURL = "https://poetrydb.org/random";
 
@@ -19,12 +18,10 @@ export class Poem extends Section {
     let count = 0;
     const scrubbedWords = [];
 
-    for (let i = 0; i < this.words.length; i++) {
-      const word = this.words[i] as string;
+    for (const word of this.words) {
       let scrubbed = "";
-      for (let j = 0; j < word.length; j++) {
-        const char = word[j] as string;
-        if (!bannedChars.includes(char)) {
+      for (const char of word) {
+        if (!bannedChars.has(char)) {
           scrubbed += char;
         }
       }
@@ -41,18 +38,23 @@ export class Poem extends Section {
   }
 }
 
-interface PoemObject {
+type PoemObject = {
   lines: string[];
   title: string;
   author: string;
-}
+};
 
 export async function getPoem(): Promise<Section | false> {
   console.log("Getting poem");
 
   try {
-    const response = await axios.get(apiURL);
-    const poemObj: PoemObject = response.data[0];
+    const response = await fetch(apiURL);
+    const data = (await response.json()) as PoemObject[];
+    const poemObj = data[0];
+
+    if (!poemObj) {
+      return false;
+    }
 
     const words: string[] = [];
 

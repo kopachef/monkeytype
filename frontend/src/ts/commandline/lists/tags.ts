@@ -1,28 +1,28 @@
 import * as DB from "../../db";
-import * as EditTagsPopup from "../../popups/edit-tags-popup";
+import * as EditTagsPopup from "../../modals/edit-tag";
 import * as ModesNotice from "../../elements/modes-notice";
 import * as TagController from "../../controllers/tag-controller";
-import Config from "../../config";
+import { Config } from "../../config/store";
 import * as PaceCaret from "../../test/pace-caret";
-import { Auth } from "../../firebase";
+import { isAuthenticated } from "../../states/core";
+import { Command, CommandsSubgroup } from "../types";
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
-  title: "Change tags...",
+const subgroup: CommandsSubgroup = {
+  title: "Tags...",
   list: [],
   beforeList: (): void => {
     update();
   },
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
-    visible: false,
     id: "changeTags",
     display: "Tags...",
     icon: "fa-tag",
     subgroup,
     available: (): boolean => {
-      return !!Auth?.currentUser;
+      return isAuthenticated();
     },
   },
 ];
@@ -30,90 +30,74 @@ const commands: MonkeyTypes.Command[] = [
 function update(): void {
   const snapshot = DB.getSnapshot();
   subgroup.list = [];
-  if (!snapshot || !snapshot.tags || snapshot.tags.length === 0) {
+
+  if (
+    snapshot !== undefined &&
+    snapshot.tags !== undefined &&
+    snapshot.tags.length > 0
+  ) {
     subgroup.list.push({
-      id: "createTag",
-      display: "Create tag",
-      icon: "fa-plus",
-      shouldFocusTestUI: false,
-      exec: (): void => {
-        EditTagsPopup.show("add");
-      },
-    });
-    return;
-  }
-  subgroup.list.push({
-    id: "clearTags",
-    display: `Clear tags`,
-    icon: "fa-times",
-    exec: (): void => {
-      const snapshot = DB.getSnapshot();
-      if (!snapshot) return;
-
-      snapshot.tags = snapshot.tags?.map((tag) => {
-        tag.active = false;
-
-        return tag;
-      });
-
-      DB.setSnapshot(snapshot);
-      ModesNotice.update();
-      TagController.saveActiveToLocalStorage();
-    },
-  });
-
-  DB.getSnapshot()?.tags?.forEach((tag) => {
-    let dis = tag.display;
-
-    if (tag.active === true) {
-      dis = '<i class="fas fa-fw fa-check"></i>' + dis;
-    } else {
-      dis = '<i class="fas fa-fw"></i>' + dis;
-    }
-
-    subgroup.list.push({
-      id: "toggleTag" + tag._id,
-      noIcon: true,
-      display: dis,
+      id: "clearTags",
+      display: `Clear tags`,
+      icon: "fa-times",
       sticky: true,
-      exec: (): void => {
-        TagController.toggle(tag._id);
-        ModesNotice.update();
+      exec: async (): Promise<void> => {
+        const snapshot = DB.getSnapshot();
+        if (!snapshot) return;
 
-        if (Config.paceCaret === "average") {
-          PaceCaret.init();
-          ModesNotice.update();
-        }
+        snapshot.tags = snapshot.tags?.map((tag) => {
+          tag.active = false;
 
-        let txt = tag.display;
+          return tag;
+        });
 
-        if (tag.active === true) {
-          txt = '<i class="fas fa-fw fa-check"></i>' + txt;
-        } else {
-          txt = '<i class="fas fa-fw"></i>' + txt;
+        DB.setSnapshot(snapshot);
+        if (
+          Config.paceCaret === "average" ||
+          Config.paceCaret === "tagPb" ||
+          Config.paceCaret === "daily"
+        ) {
+          await PaceCaret.init();
         }
-        if ($("#commandLine").hasClass("allCommands")) {
-          $(
-            `#commandLine .suggestions .entry[command='toggleTag${tag._id}']`
-          ).html(
-            `<div class="icon"><i class="fas fa-fw fa-tag"></i></div><div>Tags  > ` +
-              txt
-          );
-        } else {
-          $(
-            `#commandLine .suggestions .entry[command='toggleTag${tag._id}']`
-          ).html(txt);
-        }
+        void ModesNotice.update();
+        TagController.saveActiveToLocalStorage();
       },
     });
-  });
+
+    for (const tag of snapshot.tags) {
+      subgroup.list.push({
+        id: "toggleTag" + tag._id,
+        display: tag.display,
+        sticky: true,
+        active: () => {
+          return (
+            DB.getSnapshot()?.tags?.find((t) => t._id === tag._id)?.active ??
+            false
+          );
+        },
+        exec: async (): Promise<void> => {
+          TagController.toggle(tag._id);
+
+          if (
+            Config.paceCaret === "average" ||
+            Config.paceCaret === "tagPb" ||
+            Config.paceCaret === "daily"
+          ) {
+            await PaceCaret.init();
+          }
+          void ModesNotice.update();
+        },
+      });
+    }
+  }
   subgroup.list.push({
     id: "createTag",
     display: "Create tag",
     icon: "fa-plus",
     shouldFocusTestUI: false,
-    exec: (): void => {
-      EditTagsPopup.show("add");
+    opensModal: true,
+    exec: ({ commandlineModal }): void => {
+      EditTagsPopup.show("add", undefined, undefined, commandlineModal);
     },
   });
 }

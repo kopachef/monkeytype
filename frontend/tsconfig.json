@@ -1,41 +1,28 @@
 {
+  "extends": "@monkeytype/typescript-config/base.json",
   "compilerOptions": {
-    "target": "ES6",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "module": "CommonJS",
-    "moduleResolution": "node",
-    "types": ["jquery", "select2", "node", "jest"],
+    "types": ["vite/client", "node"],
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
     "allowUmdGlobalAccess": true,
-    "resolveJsonModule": true,
-    "outDir": "./build",
-    "newLine": "lf",
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "strict": true,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "strictFunctionTypes": true,
-    "strictBindCallApply": true,
-    "strictPropertyInitialization": true,
-    "noImplicitThis": true,
-    "useUnknownInCatchVariables": true,
-    "alwaysStrict": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "exactOptionalPropertyTypes": false,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "allowUnusedLabels": false,
-    "allowUnreachableCode": false,
-    "skipLibCheck": false,
+    "target": "ES6",
+    "noEmit": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
     "paths": {
-      "@backend/*": ["../backend/src/*"]
+      "virtual:language-hashes": [
+        "./src/ts/types/virtual-language-hashes.d.ts"
+      ],
+      "virtual:env-config": ["./src/ts/types/virtual-env-config.d.ts"]
     }
   },
-  "include": ["./src/**/*.ts"],
-  "files": ["src/ts/modules.d.ts", "../shared-types/types.d.ts"],
-  "exclude": ["node_modules", "build", "setup-tests.ts", "**/*.spec.ts"]
+  "include": [
+    "./src/**/*.ts",
+    "./src/**/*.tsx",
+    "./scripts/**/*.ts",
+    "vite-plugins/**/*.ts",
+    "vite.config.ts"
+  ],
+  "exclude": ["node_modules", "build", "setup-tests.ts", "./__tests__/**/*.*"]
 }

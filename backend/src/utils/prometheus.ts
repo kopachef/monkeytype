@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { Counter, Histogram, Gauge } from "prom-client";
+import { CompletedEvent } from "@monkeytype/schemas/results";
+import { Request } from "express";
 
 const auth = new Counter({
   name: "api_request_auth_total",
@@ -72,7 +74,9 @@ const leaderboardUpdate = new Gauge({
   labelNames: ["language", "mode", "mode2", "step"],
 });
 
-export function incrementAuth(type: "Bearer" | "ApeKey" | "None"): void {
+export function incrementAuth(
+  type: "Bearer" | "ApeKey" | "None" | "GithubWebhook",
+): void {
   auth.inc({ type });
 }
 
@@ -80,7 +84,7 @@ export function setLeaderboard(
   language: string,
   mode: string,
   mode2: string,
-  times: [number, number, number, number]
+  times: [number, number, number, number],
 ): void {
   leaderboardUpdate.set({ language, mode, mode2, step: "aggregate" }, times[0]);
   leaderboardUpdate.set({ language, mode, mode2, step: "loop" }, times[1]);
@@ -88,13 +92,10 @@ export function setLeaderboard(
   leaderboardUpdate.set({ language, mode, mode2, step: "index" }, times[3]);
 }
 
-export function incrementResult(
-  res: SharedTypes.Result<SharedTypes.Mode>
-): void {
+export function incrementResult(res: CompletedEvent, isPb?: boolean): void {
   const {
     mode,
     mode2,
-    isPb,
     blindMode,
     lazyMode,
     difficulty,
@@ -104,7 +105,7 @@ export function incrementResult(
     punctuation,
   } = res;
 
-  let m2 = mode2 as string;
+  let m2 = mode2;
   if (mode === "time" && !["15", "30", "60", "120"].includes(mode2)) {
     m2 = "custom";
   }
@@ -129,7 +130,7 @@ export function incrementResult(
   });
 
   resultFunbox.inc({
-    funbox: funbox || "none",
+    funbox: (funbox ?? ["none"]).join("#"),
   });
 
   resultWpm.observe(
@@ -137,7 +138,7 @@ export function incrementResult(
       mode,
       mode2: m2,
     },
-    res.wpm
+    res.wpm,
   );
 
   resultAcc.observe(
@@ -145,7 +146,7 @@ export function incrementResult(
       mode,
       mode2: m2,
     },
-    res.acc
+    res.acc,
   );
 
   resultDuration.observe(res.testDuration);
@@ -154,7 +155,7 @@ export function incrementResult(
 export function incrementDailyLeaderboard(
   mode: string,
   mode2: string,
-  language: string
+  language: string,
 ): void {
   dailyLb.inc({ mode, mode2, language });
 }
@@ -189,6 +190,16 @@ export function recordClientErrorByVersion(version: string): void {
   clientErrorByVersion.inc({ version });
 }
 
+const serverErrorByVersion = new Counter({
+  name: "api_server_error_by_version",
+  help: "Server versions which are generating 500 errors",
+  labelNames: ["version"],
+});
+
+export function recordServerErrorByVersion(version: string): void {
+  serverErrorByVersion.inc({ version });
+}
+
 const authTime = new Histogram({
   name: "api_request_auth_time",
   help: "Time spent authenticating",
@@ -202,8 +213,10 @@ export function recordAuthTime(
   type: string,
   status: "success" | "failure",
   time: number,
-  req: MonkeyTypes.Request
+  req: Request,
 ): void {
+  // for some reason route is not in the types
+  // oxlint-disable-next-line no-unsafe-member-access
   const reqPath = req.baseUrl + req.route.path;
 
   let normalizedPath = "/";
@@ -222,10 +235,9 @@ const requestCountry = new Counter({
   labelNames: ["path", "country"],
 });
 
-export function recordRequestCountry(
-  country: string,
-  req: MonkeyTypes.Request
-): void {
+export function recordRequestCountry(country: string, req: Request): void {
+  // for some reason route is not in the types
+  // oxlint-disable-next-line no-unsafe-member-access
   const reqPath = req.baseUrl + req.route.path;
 
   let normalizedPath = "/";
@@ -245,7 +257,7 @@ const tokenCacheAccess = new Counter({
 });
 
 export function recordTokenCacheAccess(
-  status: "hit" | "miss" | "hit_expired"
+  status: "hit" | "miss" | "hit_expired",
 ): void {
   tokenCacheAccess.inc({ status });
 }
@@ -297,7 +309,7 @@ const queueLength = new Gauge({
 export function setQueueLength(
   queueName: string,
   countType: string,
-  length: number
+  length: number,
 ): void {
   queueLength.set({ queueName, countType }, length);
 }
@@ -327,7 +339,7 @@ const timeToCompleteJobCount = new Counter({
 export function recordTimeToCompleteJob(
   queueName: string,
   jobName: string,
-  time: number
+  time: number,
 ): void {
   timeToCompleteJobTotal.inc({ queueName, jobName }, time);
   timeToCompleteJobCount.inc({ queueName, jobName });

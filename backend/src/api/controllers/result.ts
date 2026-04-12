@@ -1,28 +1,17 @@
 import * as ResultDAL from "../../dal/result";
-import {
-  getUser,
-  checkIfPb,
-  checkIfTagPb,
-  incrementBananas,
-  updateTypingStats,
-  recordAutoBanEvent,
-} from "../../dal/user";
 import * as PublicDAL from "../../dal/public";
 import {
-  getCurrentDayTimestamp,
-  getStartOfDayTimestamp,
   isDevEnvironment,
-  mapRange,
-  roundTo2,
-  stdDev,
-  stringToNumberOrDefault,
+  omit,
+  replaceObjectId,
+  replaceObjectIds,
 } from "../../utils/misc";
 import objectHash from "object-hash";
 import Logger from "../../utils/logger";
 import "dotenv/config";
 import { MonkeyResponse } from "../../utils/monkey-response";
 import MonkeyError from "../../utils/error";
-import { areFunboxesCompatible, isTestTooShort } from "../../utils/validation";
+import { isTestTooShort } from "../../utils/validation";
 import {
   implemented as anticheatImplemented,
   validateResult,
@@ -38,34 +27,66 @@ import { getDailyLeaderboard } from "../../utils/daily-leaderboards";
 import AutoRoleList from "../../constants/auto-roles";
 import * as UserDAL from "../../dal/user";
 import { buildMonkeyMail } from "../../utils/monkey-mail";
-import FunboxList from "../../constants/funbox-list";
-import _ from "lodash";
 import * as WeeklyXpLeaderboard from "../../services/weekly-xp-leaderboard";
 import { UAParser } from "ua-parser-js";
 import { canFunboxGetPb } from "../../utils/pb";
 import { buildDbResult } from "../../utils/result";
+import { Configuration } from "@monkeytype/schemas/configuration";
+import { addImportantLog, addLog } from "../../dal/logs";
+import {
+  AddResultRequest,
+  AddResultResponse,
+  GetLastResultResponse,
+  GetResultByIdPath,
+  GetResultByIdResponse,
+  GetResultsQuery,
+  GetResultsResponse,
+  UpdateResultTagsRequest,
+  UpdateResultTagsResponse,
+} from "@monkeytype/contracts/results";
+import {
+  CompletedEvent,
+  KeyStats,
+  PostResultResponse,
+  XpBreakdown,
+} from "@monkeytype/schemas/results";
+import {
+  isSafeNumber,
+  mapRange,
+  roundTo2,
+  stdDev,
+} from "@monkeytype/util/numbers";
+import {
+  getCurrentDayTimestamp,
+  getStartOfDayTimestamp,
+} from "@monkeytype/util/date-and-time";
+import { MonkeyRequest } from "../types";
+import { getFunbox, checkCompatibility } from "@monkeytype/funbox";
+import { tryCatch } from "@monkeytype/util/trycatch";
+import { getCachedConfiguration } from "../../init/configuration";
 
 try {
-  if (anticheatImplemented() === false) throw new Error("undefined");
+  if (!anticheatImplemented()) throw new Error("undefined");
   Logger.success("Anticheat module loaded");
 } catch (e) {
   if (isDevEnvironment()) {
     Logger.warning(
-      "No anticheat module found. Continuing in dev mode, results will not be validated."
+      "No anticheat module found. Continuing in dev mode, results will not be validated.",
     );
   } else {
     Logger.error(
-      "No anticheat module found. To continue in dev mode, add MODE=dev to your .env file in the backend directory"
+      "No anticheat module found. To continue in dev mode, add MODE=dev to your .env file in the backend directory",
     );
     process.exit(1);
   }
 }
 
 export async function getResults(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+  req: MonkeyRequest<GetResultsQuery>,
+): Promise<GetResultsResponse> {
   const { uid } = req.ctx.decodedToken;
   const premiumFeaturesEnabled = req.ctx.configuration.users.premium.enabled;
+  const { onOrAfterTimestamp = NaN, offset = 0 } = req.query;
   const userHasPremium = await UserDAL.checkIfUserIsPremium(uid);
 
   const maxLimit =
@@ -73,20 +94,14 @@ export async function getResults(
       ? req.ctx.configuration.results.limits.premiumUser
       : req.ctx.configuration.results.limits.regularUser;
 
-  const onOrAfterTimestamp = parseInt(
-    req.query["onOrAfterTimestamp"] as string,
-    10
-  );
-  let limit = stringToNumberOrDefault(
-    req.query["limit"] as string,
-    Math.min(req.ctx.configuration.results.maxBatchSize, maxLimit)
-  );
-  const offset = stringToNumberOrDefault(req.query["offset"] as string, 0);
+  let limit =
+    req.query.limit ??
+    Math.min(req.ctx.configuration.results.maxBatchSize, maxLimit);
 
   //check if premium features are disabled and current call exceeds the limit for regular users
   if (
     userHasPremium &&
-    premiumFeaturesEnabled === false &&
+    !premiumFeaturesEnabled &&
     limit + offset > req.ctx.configuration.results.limits.regularUser
   ) {
     throw new MonkeyError(503, "Premium feature disabled.");
@@ -106,7 +121,7 @@ export async function getResults(
     limit,
     offset,
   });
-  Logger.logToDb(
+  void addLog(
     "user_results_requested",
     {
       limit,
@@ -114,176 +129,178 @@ export async function getResults(
       onOrAfterTimestamp,
       isPremium: userHasPremium,
     },
-    uid
+    uid,
   );
-  return new MonkeyResponse("Results retrieved", results);
+
+  return new MonkeyResponse("Results retrieved", replaceObjectIds(results));
+}
+
+export async function getResultById(
+  req: MonkeyRequest<undefined, undefined, GetResultByIdPath>,
+): Promise<GetResultByIdResponse> {
+  const { uid } = req.ctx.decodedToken;
+  const { resultId } = req.params;
+
+  const result = await ResultDAL.getResult(uid, resultId);
+  return new MonkeyResponse("Result retrieved", replaceObjectId(result));
 }
 
 export async function getLastResult(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+  req: MonkeyRequest,
+): Promise<GetLastResultResponse> {
   const { uid } = req.ctx.decodedToken;
-  const results = await ResultDAL.getLastResult(uid);
-  return new MonkeyResponse("Result retrieved", results);
+  const result = await ResultDAL.getLastResult(uid);
+  return new MonkeyResponse("Result retrieved", replaceObjectId(result));
 }
 
-export async function deleteAll(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+export async function deleteAll(req: MonkeyRequest): Promise<MonkeyResponse> {
   const { uid } = req.ctx.decodedToken;
 
   await ResultDAL.deleteAll(uid);
-  Logger.logToDb("user_results_deleted", "", uid);
-  return new MonkeyResponse("All results deleted");
+  void addLog("user_results_deleted", "", uid);
+  return new MonkeyResponse("All results deleted", null);
 }
 
 export async function updateTags(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+  req: MonkeyRequest<undefined, UpdateResultTagsRequest>,
+): Promise<UpdateResultTagsResponse> {
   const { uid } = req.ctx.decodedToken;
   const { tagIds, resultId } = req.body;
 
   await ResultDAL.updateTags(uid, resultId, tagIds);
   const result = await ResultDAL.getResult(uid, resultId);
 
-  if (!result.difficulty) {
-    result.difficulty = "normal";
-  }
-  if (!result.language) {
-    result.language = "english";
-  }
-  if (!result.funbox) {
-    result.funbox = "none";
-  }
-  if (!result.lazyMode) {
-    result.lazyMode = false;
-  }
-  if (!result.punctuation) {
-    result.punctuation = false;
-  }
+  result.difficulty ??= "normal";
+  result.language ??= "english";
+  result.funbox ??= [];
+  result.lazyMode ??= false;
+  result.punctuation ??= false;
+  result.numbers ??= false;
 
-  const user = await getUser(uid, "update tags");
-  const tagPbs = await checkIfTagPb(uid, user, result);
+  const user = await UserDAL.getPartialUser(uid, "update tags", ["tags"]);
+  const tagPbs = await UserDAL.checkIfTagPb(uid, user, result);
   return new MonkeyResponse("Result tags updated", {
     tagPbs,
   });
 }
 
-interface AddResultData {
-  isPb: boolean;
-  tagPbs: string[];
-  insertedId: ObjectId;
-  dailyLeaderboardRank?: number;
-  weeklyXpLeaderboardRank?: number;
-  xp: number;
-  dailyXpBonus: boolean;
-  xpBreakdown: Record<string, number>;
-  streak: number;
-}
-
 export async function addResult(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+  req: MonkeyRequest<undefined, AddResultRequest>,
+): Promise<AddResultResponse> {
   const { uid } = req.ctx.decodedToken;
 
-  const user = await getUser(uid, "add result");
+  const user = await UserDAL.getUser(uid, "add result");
 
   if (user.needsToChangeName) {
     throw new MonkeyError(
       403,
-      "Please change your name before submitting a result"
+      "Please change your name before submitting a result",
     );
   }
 
-  const completedEvent = Object.assign(
-    {},
-    req.body.result
-  ) as SharedTypes.CompletedEvent;
-  if (!user.lbOptOut && completedEvent.acc < 75) {
-    throw new MonkeyError(
-      400,
-      "Cannot submit a result with less than 75% accuracy"
-    );
-  }
+  const completedEvent = req.body.result;
   completedEvent.uid = uid;
+
   if (isTestTooShort(completedEvent)) {
     const status = MonkeyStatusCodes.TEST_TOO_SHORT;
     throw new MonkeyError(status.code, status.message);
   }
 
-  const resulthash = completedEvent.hash;
-  if (!resulthash) {
-    throw new MonkeyError(400, "Missing result hash");
+  if (user.lbOptOut !== true && completedEvent.acc < 75) {
+    throw new MonkeyError(400, "Accuracy too low");
   }
-  delete completedEvent.hash;
-  delete completedEvent.stringified;
+
+  const resulthash = completedEvent.hash;
   if (req.ctx.configuration.results.objectHashCheckEnabled) {
-    const serverhash = objectHash(completedEvent);
+    const objectToHash = omit(completedEvent, ["hash"]);
+    const serverhash = objectHash(objectToHash);
     if (serverhash !== resulthash) {
-      Logger.logToDb(
+      void addLog(
         "incorrect_result_hash",
         {
           serverhash,
           resulthash,
           result: completedEvent,
         },
-        uid
+        uid,
       );
       const status = MonkeyStatusCodes.RESULT_HASH_INVALID;
       throw new MonkeyError(status.code, "Incorrect result hash");
     }
+  } else {
+    Logger.warning("Object hash check is disabled, skipping hash check");
   }
 
-  if (completedEvent.funbox) {
-    const funboxes = completedEvent.funbox.split("#");
-    if (funboxes.length !== _.uniq(funboxes).length) {
-      throw new MonkeyError(400, "Duplicate funboxes");
-    }
+  if (completedEvent.funbox.length !== new Set(completedEvent.funbox).size) {
+    throw new MonkeyError(400, "Duplicate funboxes");
   }
 
-  if (!areFunboxesCompatible(completedEvent.funbox ?? "")) {
+  if (!checkCompatibility(completedEvent.funbox)) {
     throw new MonkeyError(400, "Impossible funbox combination");
   }
 
-  if (completedEvent.keySpacing !== "toolong") {
-    completedEvent.keySpacingStats = {
+  let keySpacingStats: KeyStats | undefined = undefined;
+  if (
+    completedEvent.keySpacing !== "toolong" &&
+    completedEvent.keySpacing.length > 0
+  ) {
+    keySpacingStats = {
       average:
         completedEvent.keySpacing.reduce(
-          (previous, current) => (current += previous)
+          (previous, current) => (current += previous),
         ) / completedEvent.keySpacing.length,
       sd: stdDev(completedEvent.keySpacing),
     };
   }
 
-  if (completedEvent.keyDuration !== "toolong") {
-    completedEvent.keyDurationStats = {
+  let keyDurationStats: KeyStats | undefined = undefined;
+  if (
+    completedEvent.keyDuration !== "toolong" &&
+    completedEvent.keyDuration.length > 0
+  ) {
+    keyDurationStats = {
       average:
         completedEvent.keyDuration.reduce(
-          (previous, current) => (current += previous)
+          (previous, current) => (current += previous),
         ) / completedEvent.keyDuration.length,
       sd: stdDev(completedEvent.keyDuration),
     };
+  }
+
+  if (user.suspicious && completedEvent.testDuration <= 120) {
+    await addImportantLog("suspicious_user_result", completedEvent, uid);
+  }
+
+  if (
+    completedEvent.mode === "time" &&
+    (completedEvent.mode2 === "60" || completedEvent.mode2 === "15") &&
+    completedEvent.wpm > 250 &&
+    user.lbOptOut !== true
+  ) {
+    await addImportantLog("highwpm_user_result", completedEvent, uid);
   }
 
   if (anticheatImplemented()) {
     if (
       !validateResult(
         completedEvent,
-        (req.headers["x-client-version"] ||
-          req.headers["client-version"]) as string,
-        JSON.stringify(new UAParser(req.headers["user-agent"]).getResult()),
-        user.lbOptOut === true
+        ((req.raw.headers["x-client-version"] as string) ||
+          req.raw.headers["client-version"]) as string,
+        JSON.stringify(new UAParser(req.raw.headers["user-agent"]).getResult()),
+        user.lbOptOut === true,
       )
     ) {
       const status = MonkeyStatusCodes.RESULT_DATA_INVALID;
       throw new MonkeyError(status.code, "Result data doesn't make sense");
+    } else if (isDevEnvironment()) {
+      Logger.success("Result data validated");
     }
   } else {
     if (!isDevEnvironment()) {
       throw new Error("No anticheat module found");
     }
     Logger.warning(
-      "No anticheat module found. Continuing in dev mode, results will not be validated."
+      "No anticheat module found. Continuing in dev mode, results will not be validated.",
     );
   }
 
@@ -299,32 +316,24 @@ export async function addResult(
   //   );
   //   return res.status(400).json({ message: "Time traveler detected" });
 
-  // this probably wont work if we replace the timestamp with the server time later
-  // let timestampres = await ResultDAO.getResultByTimestamp(
-  //   uid,
-  //   result.timestamp
-  // );
-  // if (timestampres) {
-  //   return res.status(400).json({ message: "Duplicate result" });
-  // }
+  const { data: lastResultTimestamp } = await tryCatch(
+    ResultDAL.getLastResultTimestamp(uid),
+  );
 
   //convert result test duration to miliseconds
-  const testDurationMilis = completedEvent.testDuration * 1000;
-  //get latest result ordered by timestamp
-  let lastResultTimestamp;
-  try {
-    lastResultTimestamp = (await ResultDAL.getLastResult(uid)).timestamp;
-  } catch (e) {
-    lastResultTimestamp = null;
-  }
-
   completedEvent.timestamp = Math.floor(Date.now() / 1000) * 1000;
 
   //check if now is earlier than last result plus duration (-1 second as a buffer)
-  const earliestPossible = lastResultTimestamp + testDurationMilis;
+  const testDurationMilis = completedEvent.testDuration * 1000;
+  const incompleteTestsMilis = completedEvent.incompleteTestSeconds * 1000;
+  const earliestPossible =
+    (lastResultTimestamp ?? 0) + testDurationMilis + incompleteTestsMilis;
   const nowNoMilis = Math.floor(Date.now() / 1000) * 1000;
-  if (lastResultTimestamp && nowNoMilis < earliestPossible - 1000) {
-    Logger.logToDb(
+  if (
+    isSafeNumber(lastResultTimestamp) &&
+    nowNoMilis < earliestPossible - 1000
+  ) {
+    void addLog(
       "invalid_result_spacing",
       {
         lastTimestamp: lastResultTimestamp,
@@ -333,7 +342,7 @@ export async function addResult(
         testDuration: testDurationMilis,
         difference: nowNoMilis - earliestPossible,
       },
-      uid
+      uid,
     );
     const status = MonkeyStatusCodes.RESULT_SPACING_INVALID;
     throw new MonkeyError(status.code, "Invalid result spacing");
@@ -345,10 +354,9 @@ export async function addResult(
     completedEvent.wpm > 130 &&
     completedEvent.testDuration < 122 &&
     (user.verified === false || user.verified === undefined) &&
-    user.lbOptOut !== true &&
-    user.banned !== true //no need to check again if user is already banned
+    user.lbOptOut !== true
   ) {
-    if (!completedEvent.keySpacingStats || !completedEvent.keyDurationStats) {
+    if (!keySpacingStats || !keyDurationStats) {
       const status = MonkeyStatusCodes.MISSING_KEY_DATA;
       throw new MonkeyError(status.code, "Missing key data");
     }
@@ -356,21 +364,27 @@ export async function addResult(
       throw new MonkeyError(400, "Old key data format");
     }
     if (anticheatImplemented()) {
-      if (!validateKeys(completedEvent, uid)) {
+      if (
+        !validateKeys(completedEvent, keySpacingStats, keyDurationStats, uid)
+      ) {
         //autoban
         const autoBanConfig = req.ctx.configuration.users.autoBan;
         if (autoBanConfig.enabled) {
-          const didUserGetBanned = await recordAutoBanEvent(
+          const didUserGetBanned = await UserDAL.recordAutoBanEvent(
             uid,
             autoBanConfig.maxCount,
-            autoBanConfig.maxHours
+            autoBanConfig.maxHours,
           );
           if (didUserGetBanned) {
             const mail = buildMonkeyMail({
               subject: "Banned",
               body: "Your account has been automatically banned for triggering the anticheat system. If you believe this is a mistake, please contact support.",
             });
-            UserDAL.addToInbox(uid, [mail], req.ctx.configuration.users.inbox);
+            await UserDAL.addToInbox(
+              uid,
+              [mail],
+              req.ctx.configuration.users.inbox,
+            );
             user.banned = true;
           }
         }
@@ -382,7 +396,7 @@ export async function addResult(
         throw new Error("No anticheat module found");
       }
       Logger.warning(
-        "No anticheat module found. Continuing in dev mode, results will not be validated."
+        "No anticheat module found. Continuing in dev mode, results will not be validated.",
       );
     }
   }
@@ -390,14 +404,14 @@ export async function addResult(
   if (req.ctx.configuration.users.lastHashesCheck.enabled) {
     let lastHashes = user.lastReultHashes ?? [];
     if (lastHashes.includes(resulthash)) {
-      Logger.logToDb(
+      void addLog(
         "duplicate_result",
         {
           lastHashes,
           resulthash,
           result: completedEvent,
         },
-        uid
+        uid,
       );
       const status = MonkeyStatusCodes.DUPLICATE_RESULT;
       throw new MonkeyError(status.code, "Duplicate result");
@@ -411,21 +425,13 @@ export async function addResult(
     }
   }
 
-  if (completedEvent.keyDurationStats) {
-    completedEvent.keyDurationStats.average = roundTo2(
-      completedEvent.keyDurationStats.average
-    );
-    completedEvent.keyDurationStats.sd = roundTo2(
-      completedEvent.keyDurationStats.sd
-    );
+  if (keyDurationStats) {
+    keyDurationStats.average = roundTo2(keyDurationStats.average);
+    keyDurationStats.sd = roundTo2(keyDurationStats.sd);
   }
-  if (completedEvent.keySpacingStats) {
-    completedEvent.keySpacingStats.average = roundTo2(
-      completedEvent.keySpacingStats.average
-    );
-    completedEvent.keySpacingStats.sd = roundTo2(
-      completedEvent.keySpacingStats.sd
-    );
+  if (keySpacingStats) {
+    keySpacingStats.average = roundTo2(keySpacingStats.average);
+    keySpacingStats.sd = roundTo2(keySpacingStats.sd);
   }
 
   let isPb = false;
@@ -433,24 +439,31 @@ export async function addResult(
 
   if (!completedEvent.bailedOut) {
     [isPb, tagPbs] = await Promise.all([
-      checkIfPb(uid, user, completedEvent),
-      checkIfTagPb(uid, user, completedEvent),
+      UserDAL.checkIfPb(uid, user, completedEvent),
+      UserDAL.checkIfTagPb(uid, user, completedEvent),
     ]);
   }
 
   if (completedEvent.mode === "time" && completedEvent.mode2 === "60") {
-    incrementBananas(uid, completedEvent.wpm);
-    if (isPb && user.discordId) {
-      GeorgeQueue.updateDiscordRole(user.discordId, completedEvent.wpm);
+    void UserDAL.incrementBananas(uid, completedEvent.wpm);
+    if (
+      isPb &&
+      user.discordId !== undefined &&
+      user.discordId !== "" &&
+      user.lbOptOut !== true
+    ) {
+      void GeorgeQueue.updateDiscordRole(user.discordId, completedEvent.wpm);
     }
   }
 
   if (
-    completedEvent.challenge &&
+    completedEvent.challenge !== null &&
+    completedEvent.challenge !== undefined &&
     AutoRoleList.includes(completedEvent.challenge) &&
-    user.discordId
+    user.discordId !== undefined &&
+    user.discordId !== ""
   ) {
-    GeorgeQueue.awardChallenge(user.discordId, completedEvent.challenge);
+    void GeorgeQueue.awardChallenge(user.discordId, completedEvent.challenge);
   } else {
     delete completedEvent.challenge;
   }
@@ -458,37 +471,52 @@ export async function addResult(
   const afk = completedEvent.afkDuration ?? 0;
   const totalDurationTypedSeconds =
     completedEvent.testDuration + completedEvent.incompleteTestSeconds - afk;
-  updateTypingStats(
+  void UserDAL.updateTypingStats(
     uid,
     completedEvent.restartCount,
-    totalDurationTypedSeconds
+    totalDurationTypedSeconds,
   );
-  PublicDAL.updateStats(completedEvent.restartCount, totalDurationTypedSeconds);
+  void PublicDAL.updateStats(
+    completedEvent.restartCount,
+    totalDurationTypedSeconds,
+  );
 
   const dailyLeaderboardsConfig = req.ctx.configuration.dailyLeaderboards;
   const dailyLeaderboard = getDailyLeaderboard(
     completedEvent.language,
     completedEvent.mode,
     completedEvent.mode2,
-    dailyLeaderboardsConfig
+    dailyLeaderboardsConfig,
   );
 
   let dailyLeaderboardRank = -1;
 
+  const stopOnLetterTriggered =
+    completedEvent.stopOnLetter && completedEvent.acc < 100;
+
+  const minTimeTyping = (await getCachedConfiguration(true)).leaderboards
+    .minTimeTyping;
+
+  const userEligibleForLeaderboard =
+    user.banned !== true &&
+    user.lbOptOut !== true &&
+    (isDevEnvironment() || (user.timeTyping ?? 0) > minTimeTyping);
+
   const validResultCriteria =
     canFunboxGetPb(completedEvent) &&
     !completedEvent.bailedOut &&
-    user.banned !== true &&
-    user.lbOptOut !== true &&
-    (isDevEnvironment() || (user.timeTyping ?? 0) > 7200);
+    userEligibleForLeaderboard &&
+    !stopOnLetterTriggered;
 
   const selectedBadgeId = user.inventory?.badges?.find((b) => b.selected)?.id;
+  const isPremium =
+    (await UserDAL.checkIfUserIsPremium(user.uid, user)) || undefined;
 
   if (dailyLeaderboard && validResultCriteria) {
     incrementDailyLeaderboard(
       completedEvent.mode,
       completedEvent.mode2,
-      completedEvent.language
+      completedEvent.language,
     );
     dailyLeaderboardRank = await dailyLeaderboard.addResult(
       {
@@ -502,23 +530,35 @@ export async function addResult(
         discordAvatar: user.discordAvatar,
         discordId: user.discordId,
         badgeId: selectedBadgeId,
+        isPremium,
       },
-      dailyLeaderboardsConfig
+      dailyLeaderboardsConfig,
     );
+    if (
+      dailyLeaderboardRank >= 1 &&
+      dailyLeaderboardRank <= 10 &&
+      completedEvent.testDuration <= 120
+    ) {
+      const now = Date.now();
+      const reset = getCurrentDayTimestamp();
+      const limit = 6 * 60 * 60 * 1000;
+      if (now - reset >= limit) {
+        await addLog("daily_leaderboard_top_10_result", completedEvent, uid);
+      }
+    }
   }
 
   const streak = await UserDAL.updateStreak(uid, completedEvent.timestamp);
+  const badgeWaitingInInbox = (
+    user.inbox?.flatMap((i) =>
+      (i.rewards ?? []).map((r) => (r.type === "badge" ? r.item.id : null)),
+    ) ?? []
+  ).includes(14);
 
   const shouldGetBadge =
     streak >= 365 &&
     user.inventory?.badges?.find((b) => b.id === 14) === undefined &&
-    (
-      user.inbox
-        ?.map((i) =>
-          (i.rewards ?? []).map((r) => (r.type === "badge" ? r.item.id : null))
-        )
-        .flat() ?? []
-    ).includes(14) === false;
+    !badgeWaitingInInbox;
 
   if (shouldGetBadge) {
     const mail = buildMonkeyMail({
@@ -533,15 +573,15 @@ export async function addResult(
         },
       ],
     });
-    UserDAL.addToInbox(uid, [mail], req.ctx.configuration.users.inbox);
+    await UserDAL.addToInbox(uid, [mail], req.ctx.configuration.users.inbox);
   }
 
   const xpGained = await calculateXp(
     completedEvent,
     req.ctx.configuration.users.xp,
-    uid,
+    lastResultTimestamp,
     user.xp ?? 0,
-    streak
+    streak,
   );
 
   if (xpGained.xp < 0) {
@@ -552,25 +592,17 @@ export async function addResult(
         xpGained,
         result: completedEvent,
       }),
-      uid
+      uid,
     );
   }
 
   const weeklyXpLeaderboardConfig = req.ctx.configuration.leaderboards.weeklyXp;
   let weeklyXpLeaderboardRank = -1;
-  const eligibleForWeeklyXpLeaderboard =
-    user.banned !== true &&
-    user.lbOptOut !== true &&
-    (isDevEnvironment() || (user.timeTyping ?? 0) > 7200);
 
   const weeklyXpLeaderboard = WeeklyXpLeaderboard.get(
-    weeklyXpLeaderboardConfig
+    weeklyXpLeaderboardConfig,
   );
-  if (
-    eligibleForWeeklyXpLeaderboard &&
-    xpGained.xp > 0 &&
-    weeklyXpLeaderboard
-  ) {
+  if (userEligibleForLeaderboard && xpGained.xp > 0 && weeklyXpLeaderboard) {
     weeklyXpLeaderboardRank = await weeklyXpLeaderboard.addResult(
       weeklyXpLeaderboardConfig,
       {
@@ -581,35 +613,43 @@ export async function addResult(
           discordId: user.discordId,
           badgeId: selectedBadgeId,
           lastActivityTimestamp: Date.now(),
+          isPremium,
+          timeTypedSeconds: totalDurationTypedSeconds,
         },
         xpGained: xpGained.xp,
-        timeTypedSeconds: totalDurationTypedSeconds,
-      }
+      },
     );
   }
 
   const dbresult = buildDbResult(completedEvent, user.name, isPb);
+  if (keySpacingStats !== undefined) {
+    dbresult.keySpacingStats = keySpacingStats;
+  }
+  if (keyDurationStats !== undefined) {
+    dbresult.keyDurationStats = keyDurationStats;
+  }
 
   const addedResult = await ResultDAL.addResult(uid, dbresult);
 
   await UserDAL.incrementXp(uid, xpGained.xp);
+  await UserDAL.incrementTestActivity(user, completedEvent.timestamp);
 
   if (isPb) {
-    Logger.logToDb(
+    void addLog(
       "user_new_pb",
       `${completedEvent.mode + " " + completedEvent.mode2} ${
         completedEvent.wpm
       } ${completedEvent.acc}% ${completedEvent.rawWpm} ${
         completedEvent.consistency
       }% (${addedResult.insertedId})`,
-      uid
+      uid,
     );
   }
 
-  const data: AddResultData = {
+  const data: PostResultResponse = {
     isPb,
     tagPbs,
-    insertedId: addedResult.insertedId,
+    insertedId: addedResult.insertedId.toHexString(),
     xp: xpGained.xp,
     dailyXpBonus: xpGained.dailyBonus ?? false,
     xpBreakdown: xpGained.breakdown ?? {},
@@ -624,23 +664,23 @@ export async function addResult(
     data.weeklyXpLeaderboardRank = weeklyXpLeaderboardRank;
   }
 
-  incrementResult(completedEvent);
+  incrementResult(completedEvent, dbresult.isPb);
 
   return new MonkeyResponse("Result saved", data);
 }
 
-interface XpResult {
+type XpResult = {
   xp: number;
   dailyBonus?: boolean;
-  breakdown?: Record<string, number>;
-}
+  breakdown?: XpBreakdown;
+};
 
 async function calculateXp(
-  result,
-  xpConfiguration: SharedTypes.Configuration["users"]["xp"],
-  uid: string,
+  result: CompletedEvent,
+  xpConfiguration: Configuration["users"]["xp"],
+  lastResultTimestamp: number | null,
   currentTotalXp: number,
-  streak: number
+  streak: number,
 ): Promise<XpResult> {
   const {
     mode,
@@ -652,7 +692,7 @@ async function calculateXp(
     charStats,
     punctuation,
     numbers,
-    funbox,
+    funbox: resultFunboxes,
   } = result;
 
   const {
@@ -669,10 +709,10 @@ async function calculateXp(
     };
   }
 
-  const breakdown: Record<string, number> = {};
+  const breakdown: XpBreakdown = {};
 
   const baseXp = Math.round((testDuration - afkDuration) * 2);
-  breakdown["base"] = baseXp;
+  breakdown.base = baseXp;
 
   let modifier = 1;
 
@@ -682,38 +722,39 @@ async function calculateXp(
 
   if (acc === 100) {
     modifier += 0.5;
-    breakdown["100%"] = Math.round(baseXp * 0.5);
+    breakdown.fullAccuracy = Math.round(baseXp * 0.5);
   } else if (correctedEverything) {
     // corrected everything bonus
     modifier += 0.25;
-    breakdown["corrected"] = Math.round(baseXp * 0.25);
+    breakdown.corrected = Math.round(baseXp * 0.25);
   }
 
   if (mode === "quote") {
     // real sentences bonus
     modifier += 0.5;
-    breakdown["quote"] = Math.round(baseXp * 0.5);
+    breakdown.quote = Math.round(baseXp * 0.5);
   } else {
     // punctuation bonus
     if (punctuation) {
       modifier += 0.4;
-      breakdown["punctuation"] = Math.round(baseXp * 0.4);
+      breakdown.punctuation = Math.round(baseXp * 0.4);
     }
     if (numbers) {
       modifier += 0.1;
-      breakdown["numbers"] = Math.round(baseXp * 0.1);
+      breakdown.numbers = Math.round(baseXp * 0.1);
     }
   }
 
-  if (funboxBonusConfiguration > 0) {
-    const funboxModifier = _.sumBy(funbox.split("#"), (funboxName) => {
-      const funbox = FunboxList.find((f) => f.name === funboxName);
+  if (funboxBonusConfiguration > 0 && resultFunboxes.length !== 0) {
+    const funboxModifier = resultFunboxes.reduce((sum, funboxName) => {
+      const funbox = getFunbox(funboxName);
       const difficultyLevel = funbox?.difficultyLevel ?? 0;
-      return Math.max(difficultyLevel * funboxBonusConfiguration, 0);
-    });
+      return sum + Math.max(difficultyLevel * funboxBonusConfiguration, 0);
+    }, 0);
+
     if (funboxModifier > 0) {
       modifier += funboxModifier;
-      breakdown["funbox"] = Math.round(baseXp * funboxModifier);
+      breakdown.funbox = Math.round(baseXp * funboxModifier);
     }
   }
 
@@ -725,58 +766,49 @@ async function calculateXp(
         xpConfiguration.streak.maxStreakDays,
         0,
         xpConfiguration.streak.maxStreakMultiplier,
-        true
-      ).toFixed(1)
+        true,
+      ).toFixed(1),
     );
 
     if (streakModifier > 0) {
       modifier += streakModifier;
-      breakdown["streak"] = Math.round(baseXp * streakModifier);
+      breakdown.streak = Math.round(baseXp * streakModifier);
     }
   }
 
   let incompleteXp = 0;
-  if (incompleteTests && incompleteTests.length > 0) {
+  if (incompleteTests !== undefined && incompleteTests.length > 0) {
     incompleteTests.forEach((it: { acc: number; seconds: number }) => {
-      let modifier = (it.acc - 50) / 50;
-      if (modifier < 0) modifier = 0;
-      incompleteXp += Math.round(it.seconds * modifier);
+      let mod = (it.acc - 50) / 50;
+      if (mod < 0) mod = 0;
+      incompleteXp += Math.round(it.seconds * mod);
     });
-    breakdown["incomplete"] = incompleteXp;
+    breakdown.incomplete = incompleteXp;
   } else if (incompleteTestSeconds && incompleteTestSeconds > 0) {
     incompleteXp = Math.round(incompleteTestSeconds);
-    breakdown["incomplete"] = incompleteXp;
+    breakdown.incomplete = incompleteXp;
   }
 
   const accuracyModifier = (acc - 50) / 50;
 
   let dailyBonus = 0;
-  let lastResultTimestamp: number | undefined;
-
-  try {
-    const { timestamp } = await ResultDAL.getLastResult(uid);
-    lastResultTimestamp = timestamp;
-  } catch (err) {
-    Logger.error(`Could not fetch last result: ${err}`);
-  }
-
-  if (lastResultTimestamp) {
+  if (isSafeNumber(lastResultTimestamp)) {
     const lastResultDay = getStartOfDayTimestamp(lastResultTimestamp);
     const today = getCurrentDayTimestamp();
     if (lastResultDay !== today) {
       const proportionalXp = Math.round(currentTotalXp * 0.05);
       dailyBonus = Math.max(
         Math.min(maxDailyBonus, proportionalXp),
-        minDailyBonus
+        minDailyBonus,
       );
-      breakdown["daily"] = dailyBonus;
+      breakdown.daily = dailyBonus;
     }
   }
 
   const xpWithModifiers = Math.round(baseXp * modifier);
 
   const xpAfterAccuracy = Math.round(xpWithModifiers * accuracyModifier);
-  breakdown["accPenalty"] = xpWithModifiers - xpAfterAccuracy;
+  breakdown.accPenalty = xpWithModifiers - xpAfterAccuracy;
 
   const totalXp =
     Math.round((xpAfterAccuracy + incompleteXp) * gainMultiplier) + dailyBonus;
@@ -786,7 +818,7 @@ async function calculateXp(
     //   "configMultiplier",
     //   Math.round((xpAfterAccuracy + incompleteXp) * (gainMultiplier - 1)),
     // ]);
-    breakdown["configMultiplier"] = gainMultiplier;
+    breakdown.configMultiplier = gainMultiplier;
   }
 
   const isAwardingDailyBonus = dailyBonus > 0;

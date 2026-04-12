@@ -1,18 +1,27 @@
-import Ape from ".";
+import { Configuration } from "@monkeytype/schemas/configuration";
+import { promiseWithResolvers } from "../utils/misc";
+import { queryClient } from "../queries";
+import { getServerConfigurationQueryOptions } from "../queries/server-configuration";
 
-let config: SharedTypes.Configuration | undefined = undefined;
+const {
+  promise: configurationPromise,
+  resolve,
+  reject,
+} = promiseWithResolvers<boolean>();
 
-export function get(): SharedTypes.Configuration | undefined {
-  return config;
+export { configurationPromise };
+
+export function get(): Configuration | undefined {
+  return queryClient.getQueryData(
+    getServerConfigurationQueryOptions().queryKey,
+  );
 }
 
 export async function sync(): Promise<void> {
-  const response = await Ape.configuration.get();
-
-  if (response.status !== 200) {
-    console.error("Could not fetch configuration", response.message);
-    return;
-  } else {
-    config = response.data as SharedTypes.Configuration;
+  try {
+    await queryClient.fetchQuery(getServerConfigurationQueryOptions());
+    resolve(true);
+  } catch (e) {
+    reject(e);
   }
 }

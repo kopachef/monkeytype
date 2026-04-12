@@ -1,44 +1,50 @@
-import _ from "lodash";
-import * as misc from "../../src/utils/misc";
+import { describe, it, expect, afterAll, vi } from "vitest";
+import * as Misc from "../../src/utils/misc";
+import { ObjectId } from "mongodb";
 
 describe("Misc Utils", () => {
-  it("getCurrentDayTimestamp", () => {
-    Date.now = jest.fn(() => 1652743381);
-
-    const currentDay = misc.getCurrentDayTimestamp();
-    expect(currentDay).toBe(1641600000);
+  afterAll(() => {
+    vi.useRealTimers();
   });
 
-  it("matchesAPattern", () => {
-    const testCases = {
-      "eng.*": {
+  describe("matchesAPattern", () => {
+    const testCases = [
+      {
+        pattern: "eng.*",
         cases: ["english", "aenglish", "en", "eng"],
         expected: [true, false, false, true],
       },
 
-      "\\d+": {
+      {
+        pattern: "\\d+",
         cases: ["b", "2", "331", "1a"],
         expected: [false, true, true, false],
       },
-      "(hi|hello)": {
+      {
+        pattern: "(hi|hello)",
         cases: ["hello", "hi", "hillo", "hi hello"],
         expected: [true, true, false, false],
       },
-      ".+": {
+      {
+        pattern: ".+",
         cases: ["a2", "b2", "c1", ""],
         expected: [true, true, true, false],
       },
-    };
+    ];
 
-    _.each(testCases, (testCase, pattern) => {
-      const { cases, expected } = testCase;
-      _.each(cases, (caseValue, index) => {
-        expect(misc.matchesAPattern(caseValue, pattern)).toBe(expected[index]);
-      });
-    });
+    it.each(testCases)(
+      "matchesAPattern with $pattern",
+      ({ pattern, cases, expected }) => {
+        cases.forEach((caseValue, index) => {
+          expect(Misc.matchesAPattern(caseValue, pattern)).toBe(
+            expected[index],
+          );
+        });
+      },
+    );
   });
 
-  it("kogascore", () => {
+  describe("kogascore", () => {
     const testCases = [
       {
         wpm: 214.8,
@@ -64,14 +70,31 @@ describe("Misc Utils", () => {
         timestamp: 1653591901000,
         expectedScore: 1196200960717699,
       },
+      {
+        wpm: 196.205,
+        acc: 96.075,
+        timestamp: 1653591901000,
+        expectedScore: 1196210960817699,
+      },
+      {
+        // this one is particularly important - in JS 154.39 * 100 is equal to 15438.999999999998
+        // thanks floating point errors!
+        wpm: 154.39,
+        acc: 96.14,
+        timestamp: 1740333827000,
+        expectedScore: 1154390961421373,
+      },
     ];
 
-    _.each(testCases, ({ wpm, acc, timestamp, expectedScore }) => {
-      expect(misc.kogascore(wpm, acc, timestamp)).toBe(expectedScore);
-    });
+    it.each(testCases)(
+      "kogascore with wpm:$wpm, acc:$acc, timestamp:$timestamp = $expectedScore",
+      ({ wpm, acc, timestamp, expectedScore }) => {
+        expect(Misc.kogascore(wpm, acc, timestamp)).toBe(expectedScore);
+      },
+    );
   });
 
-  it("identity", () => {
+  describe("identity", () => {
     const testCases = [
       {
         input: "",
@@ -94,13 +117,15 @@ describe("Misc Utils", () => {
         expected: "undefined",
       },
     ];
-
-    _.each(testCases, ({ input, expected }) => {
-      expect(misc.identity(input)).toEqual(expected);
-    });
+    it.each(testCases)(
+      "identity with $input = $expected",
+      ({ input, expected }) => {
+        expect(Misc.identity(input)).toBe(expected);
+      },
+    );
   });
 
-  it("flattenObjectDeep", () => {
+  describe("flattenObjectDeep", () => {
     const testCases = [
       {
         obj: {
@@ -164,9 +189,12 @@ describe("Misc Utils", () => {
       },
     ];
 
-    _.each(testCases, ({ obj, expected }) => {
-      expect(misc.flattenObjectDeep(obj)).toEqual(expected);
-    });
+    it.each(testCases)(
+      "flattenObjectDeep with $obj = $expected",
+      ({ obj, expected }) => {
+        expect(Misc.flattenObjectDeep(obj)).toEqual(expected);
+      },
+    );
   });
 
   it("sanitizeString", () => {
@@ -202,7 +230,7 @@ describe("Misc Utils", () => {
     ];
 
     testCases.forEach(({ input, expected }) => {
-      expect(misc.sanitizeString(input)).toEqual(expected);
+      expect(Misc.sanitizeString(input)).toEqual(expected);
     });
   });
 
@@ -271,283 +299,9 @@ describe("Misc Utils", () => {
     ];
 
     testCases.forEach(({ input, output }) => {
-      expect(misc.getOrdinalNumberString(input)).toEqual(output);
+      expect(Misc.getOrdinalNumberString(input)).toEqual(output);
     });
   });
-
-  it("getStartOfWeekTimestamp", () => {
-    const testCases = [
-      {
-        input: 1662400184017, // Mon Sep 05 2022 17:49:44 GMT+0000
-        expected: 1662336000000, // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: 1559771456000, // Wed Jun 05 2019 21:50:56 GMT+0000
-        expected: 1559520000000, // Mon Jun 03 2019 00:00:00 GMT+0000
-      },
-      {
-        input: 1465163456000, // Sun Jun 05 2016 21:50:56 GMT+0000
-        expected: 1464566400000, // Mon May 30 2016 00:00:00 GMT+0000
-      },
-      {
-        input: 1491515456000, // Thu Apr 06 2017 21:50:56 GMT+0000
-        expected: 1491177600000, // Mon Apr 03 2017 00:00:00 GMT+0000
-      },
-      {
-        input: 1462507200000, // Fri May 06 2016 04:00:00 GMT+0000
-        expected: 1462147200000, // Mon May 02 2016 00:00:00 GMT+0000
-      },
-      {
-        input: 1231218000000, // Tue Jan 06 2009 05:00:00 GMT+0000,
-        expected: 1231113600000, // Mon Jan 05 2009 00:00:00 GMT+0000
-      },
-      {
-        input: 1709420681000, // Sat Mar 02 2024 23:04:41 GMT+0000
-        expected: 1708905600000, // Mon Feb 26 2024 00:00:00 GMT+0000
-      },
-    ];
-
-    testCases.forEach(({ input, expected }) => {
-      expect(misc.getStartOfWeekTimestamp(input)).toEqual(expected);
-    });
-  });
-
-  it("getCurrentWeekTimestamp", () => {
-    Date.now = jest.fn(() => 825289481000); // Sun Feb 25 1996 23:04:41 GMT+0000
-
-    const currentWeek = misc.getCurrentWeekTimestamp();
-    expect(currentWeek).toBe(824688000000); // Mon Feb 19 1996 00:00:00 GMT+0000
-  });
-
-  it("getStartOfDayTimestamp", () => {
-    const testCases = [
-      {
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 0,
-        expected: new Date("2023/06/16 00:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 1,
-        expected: new Date("2023/06/16 01:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: -1,
-        expected: new Date("2023/06/15 23:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: -4,
-        expected: new Date("2023/06/15 20:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 4,
-        expected: new Date("2023/06/16 04:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/17 03:00 UTC").getTime(),
-        offset: 4,
-        expected: new Date("2023/06/16 04:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 3,
-        expected: new Date("2023/06/16 03:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-      {
-        input: new Date("2023/06/17 01:00 UTC").getTime(),
-        offset: 3,
-        expected: new Date("2023/06/16 03:00 UTC").getTime(), // Mon Sep 05 2022 00:00:00 GMT+0000
-      },
-    ];
-
-    testCases.forEach(({ input, offset, expected }) => {
-      expect(misc.getStartOfDayTimestamp(input, offset * 3600000)).toEqual(
-        expected
-      );
-    });
-  });
-
-  it("isToday", () => {
-    const testCases = [
-      {
-        now: new Date("2023/06/16 15:00 UTC").getTime(),
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 0,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/16 15:00 UTC").getTime(),
-        input: new Date("2023/06/17 1:00 UTC").getTime(),
-        offset: 0,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/16 15:00 UTC").getTime(),
-        input: new Date("2023/06/16 01:00 UTC").getTime(),
-        offset: 1,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/16 15:00 UTC").getTime(),
-        input: new Date("2023/06/17 01:00 UTC").getTime(),
-        offset: 2,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/16 15:00 UTC").getTime(),
-        input: new Date("2023/06/16 01:00 UTC").getTime(),
-        offset: 2,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/17 01:00 UTC").getTime(),
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 2,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/17 01:00 UTC").getTime(),
-        input: new Date("2023/06/17 02:00 UTC").getTime(),
-        offset: 2,
-        expected: false,
-      },
-    ];
-
-    testCases.forEach(({ now, input, offset, expected }) => {
-      Date.now = jest.fn(() => now);
-      expect(misc.isToday(input, offset)).toEqual(expected);
-    });
-  });
-
-  it("isYesterday", () => {
-    const testCases = [
-      {
-        now: new Date("2023/06/15 15:00 UTC").getTime(),
-        input: new Date("2023/06/14 15:00 UTC").getTime(),
-        offset: 0,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/15 15:00 UTC").getTime(),
-        input: new Date("2023/06/15 15:00 UTC").getTime(),
-        offset: 0,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/15 15:00 UTC").getTime(),
-        input: new Date("2023/06/16 15:00 UTC").getTime(),
-        offset: 0,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/15 15:00 UTC").getTime(),
-        input: new Date("2023/06/13 15:00 UTC").getTime(),
-        offset: 0,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/16 02:00 UTC").getTime(),
-        input: new Date("2023/06/15 02:00 UTC").getTime(),
-        offset: 4,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/16 02:00 UTC").getTime(),
-        input: new Date("2023/06/16 01:00 UTC").getTime(),
-        offset: 4,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/16 02:00 UTC").getTime(),
-        input: new Date("2023/06/15 22:00 UTC").getTime(),
-        offset: 4,
-        expected: false,
-      },
-      {
-        now: new Date("2023/06/16 04:00 UTC").getTime(),
-        input: new Date("2023/06/16 03:00 UTC").getTime(),
-        offset: 4,
-        expected: true,
-      },
-      {
-        now: new Date("2023/06/16 14:00 UTC").getTime(),
-        input: new Date("2023/06/16 12:00 UTC").getTime(),
-        offset: -11,
-        expected: true,
-      },
-    ];
-
-    testCases.forEach(({ now, input, offset, expected }) => {
-      Date.now = jest.fn(() => now);
-      expect(misc.isYesterday(input, offset)).toEqual(expected);
-    });
-  });
-
-  it("mapRange", () => {
-    const testCases = [
-      {
-        input: {
-          value: 123,
-          inMin: 0,
-          inMax: 200,
-          outMin: 0,
-          outMax: 1000,
-          clamp: false,
-        },
-        expected: 615,
-      },
-      {
-        input: {
-          value: 123,
-          inMin: 0,
-          inMax: 200,
-          outMin: 1000,
-          outMax: 0,
-          clamp: false,
-        },
-        expected: 385,
-      },
-      {
-        input: {
-          value: 10001,
-          inMin: 0,
-          inMax: 10000,
-          outMin: 0,
-          outMax: 1000,
-          clamp: false,
-        },
-        expected: 1000.1,
-      },
-      {
-        input: {
-          value: 10001,
-          inMin: 0,
-          inMax: 10000,
-          outMin: 0,
-          outMax: 1000,
-          clamp: true,
-        },
-        expected: 1000,
-      },
-    ];
-
-    testCases.forEach(({ input, expected }) => {
-      expect(
-        misc.mapRange(
-          input.value,
-          input.inMin,
-          input.inMax,
-          input.outMin,
-          input.outMax,
-          input.clamp
-        )
-      ).toEqual(expected);
-    });
-  });
-
   it("formatSeconds", () => {
     const testCases = [
       {
@@ -559,45 +313,186 @@ describe("Misc Utils", () => {
         expected: "1.08 minutes",
       },
       {
-        seconds: misc.HOUR_IN_SECONDS,
+        seconds: Misc.HOUR_IN_SECONDS,
         expected: "1 hour",
       },
       {
-        seconds: misc.DAY_IN_SECONDS,
+        seconds: Misc.DAY_IN_SECONDS,
         expected: "1 day",
       },
       {
-        seconds: misc.WEEK_IN_SECONDS,
+        seconds: Misc.WEEK_IN_SECONDS,
         expected: "1 week",
       },
       {
-        seconds: misc.YEAR_IN_SECONDS,
+        seconds: Misc.YEAR_IN_SECONDS,
         expected: "1 year",
       },
       {
-        seconds: 2 * misc.YEAR_IN_SECONDS,
+        seconds: 2 * Misc.YEAR_IN_SECONDS,
         expected: "2 years",
       },
       {
-        seconds: 4 * misc.YEAR_IN_SECONDS,
+        seconds: 4 * Misc.YEAR_IN_SECONDS,
         expected: "4 years",
       },
       {
-        seconds: 3 * misc.WEEK_IN_SECONDS,
+        seconds: 3 * Misc.WEEK_IN_SECONDS,
         expected: "3 weeks",
       },
       {
-        seconds: misc.MONTH_IN_SECONDS * 4,
+        seconds: Misc.MONTH_IN_SECONDS * 4,
         expected: "4 months",
       },
       {
-        seconds: misc.MONTH_IN_SECONDS * 11,
+        seconds: Misc.MONTH_IN_SECONDS * 11,
         expected: "11 months",
       },
     ];
 
     testCases.forEach(({ seconds, expected }) => {
-      expect(misc.formatSeconds(seconds)).toBe(expected);
+      expect(Misc.formatSeconds(seconds)).toBe(expected);
+    });
+  });
+
+  describe("replaceObjectId", () => {
+    it("replaces objecId with string", () => {
+      const fromDatabase = {
+        _id: new ObjectId(),
+        test: "test",
+        number: 1,
+      };
+      expect(Misc.replaceObjectId(fromDatabase)).toStrictEqual({
+        _id: fromDatabase._id.toHexString(),
+        test: "test",
+        number: 1,
+      });
+    });
+    it("ignores null values", () => {
+      expect(Misc.replaceObjectId(null)).toBeNull();
+    });
+  });
+
+  describe("replaceObjectIds", () => {
+    it("replaces objecIds with string", () => {
+      const fromDatabase = {
+        _id: new ObjectId(),
+        test: "test",
+        number: 1,
+      };
+      const fromDatabase2 = {
+        _id: new ObjectId(),
+        test: "bob",
+        number: 2,
+      };
+      expect(
+        Misc.replaceObjectIds([fromDatabase, fromDatabase2]),
+      ).toStrictEqual([
+        {
+          _id: fromDatabase._id.toHexString(),
+          test: "test",
+          number: 1,
+        },
+        {
+          _id: fromDatabase2._id.toHexString(),
+          test: "bob",
+          number: 2,
+        },
+      ]);
+    });
+    it("handles undefined", () => {
+      expect(Misc.replaceObjectIds(undefined as any)).toBeUndefined();
+    });
+  });
+
+  describe("omit()", () => {
+    it("should omit a single key", () => {
+      const input = { a: 1, b: 2, c: 3 };
+      const result = Misc.omit(input, ["b"]);
+      expect(result).toEqual({ a: 1, c: 3 });
+    });
+
+    it("should omit multiple keys", () => {
+      const input = { a: 1, b: 2, c: 3, d: 4 };
+      const result = Misc.omit(input, ["a", "d"]);
+      expect(result).toEqual({ b: 2, c: 3 });
+    });
+
+    it("should return the same object if no keys are omitted", () => {
+      const input = { x: 1, y: 2 };
+      const result = Misc.omit(input, []);
+      expect(result).toEqual({ x: 1, y: 2 });
+    });
+
+    it("should not mutate the original object", () => {
+      const input = { foo: "bar", baz: "qux" };
+      const copy = { ...input };
+      Misc.omit(input, ["baz"]);
+      expect(input).toEqual(copy);
+    });
+
+    it("should ignore keys that do not exist", () => {
+      const input = { a: 1, b: 2 };
+      const result = Misc.omit(input, "c" as any); // allow a non-existing key
+      expect(result).toEqual({ a: 1, b: 2 });
+    });
+
+    it("should work with different value types", () => {
+      const input = {
+        str: "hello",
+        num: 123,
+        bool: true,
+        obj: { x: 1 },
+        arr: [1, 2, 3],
+      };
+      const result = Misc.omit(input, ["bool", "arr"]);
+      expect(result).toEqual({
+        str: "hello",
+        num: 123,
+        obj: { x: 1 },
+      });
+    });
+  });
+
+  describe("isPlainObject", () => {
+    it("should return true for plain objects", () => {
+      expect(Misc.isPlainObject({})).toBe(true);
+      expect(Misc.isPlainObject({ a: 1, b: 2 })).toBe(true);
+      expect(Misc.isPlainObject(Object.create(Object.prototype))).toBe(true);
+    });
+
+    it("should return false for arrays", () => {
+      expect(Misc.isPlainObject([])).toBe(false);
+      expect(Misc.isPlainObject([1, 2, 3])).toBe(false);
+    });
+
+    it("should return false for null", () => {
+      expect(Misc.isPlainObject(null)).toBe(false);
+    });
+
+    it("should return false for primitives", () => {
+      expect(Misc.isPlainObject(123)).toBe(false);
+      expect(Misc.isPlainObject("string")).toBe(false);
+      expect(Misc.isPlainObject(true)).toBe(false);
+      expect(Misc.isPlainObject(undefined)).toBe(false);
+      expect(Misc.isPlainObject(Symbol("sym"))).toBe(false);
+    });
+
+    it("should return false for objects with different prototypes", () => {
+      // oxlint-disable-next-line no-extraneous-class
+      class MyClass {}
+      expect(Misc.isPlainObject(new MyClass())).toBe(false);
+      expect(Misc.isPlainObject(Object.create(null))).toBe(false);
+      expect(Misc.isPlainObject(new Date())).toBe(false);
+      expect(Misc.isPlainObject(new Map())).toBe(false);
+      expect(Misc.isPlainObject(new Set())).toBe(false);
+    });
+
+    it("should return false for functions", () => {
+      // oxlint-disable-next-line no-empty-function
+      expect(Misc.isPlainObject(function () {})).toBe(false);
+      // oxlint-disable-next-line no-empty-function
+      expect(Misc.isPlainObject(() => {})).toBe(false);
     });
   });
 });

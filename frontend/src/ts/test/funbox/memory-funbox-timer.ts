@@ -1,24 +1,23 @@
-import * as TestWords from "../test-words";
+import { applyReducedMotion } from "../../utils/misc";
+import { qs } from "../../utils/dom";
 
 let memoryTimer: number | null = null;
 let memoryInterval: NodeJS.Timeout | null = null;
 
+const timerEl = qs("#typingTest #memoryTimer");
+
 export function show(): void {
-  $("#typingTest #memoryTimer").stop(true, true).animate(
-    {
-      opacity: 1,
-    },
-    125
-  );
+  timerEl?.animate({
+    opacity: 1,
+    duration: applyReducedMotion(125),
+  });
 }
 
 export function hide(): void {
-  $("#typingTest #memoryTimer").stop(true, true).animate(
-    {
-      opacity: 0,
-    },
-    125
-  );
+  timerEl?.animate({
+    opacity: 0,
+    duration: applyReducedMotion(125),
+  });
 }
 
 export function reset(): void {
@@ -30,9 +29,9 @@ export function reset(): void {
   hide();
 }
 
-export function start(): void {
+export function start(time: number): void {
   reset();
-  memoryTimer = Math.round(Math.pow(TestWords.words.length, 1.2));
+  memoryTimer = time;
   update(memoryTimer);
   show();
   memoryInterval = setInterval(() => {
@@ -41,13 +40,11 @@ export function start(): void {
     memoryTimer === 0 ? hide() : update(memoryTimer);
     if (memoryTimer <= 0) {
       reset();
-      $("#wordsWrapper").addClass("hidden");
+      qs("#wordsWrapper")?.hide();
     }
   }, 1000);
 }
 
 export function update(sec: number): void {
-  $("#typingTest #memoryTimer").text(
-    `Timer left to memorise all words: ${sec}s`
-  );
+  timerEl?.setText(`Timer left to memorise all words: ${sec}s`);
 }

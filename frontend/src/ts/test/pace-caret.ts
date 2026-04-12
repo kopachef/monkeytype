@@ -1,24 +1,29 @@
 import * as TestWords from "./test-words";
-import * as TestUI from "./test-ui";
-import Config from "../config";
+import { Config } from "../config/store";
 import * as DB from "../db";
-import * as SlowTimer from "../states/slow-timer";
 import * as Misc from "../utils/misc";
 import * as TestState from "./test-state";
-import * as ConfigEvent from "../observables/config-event";
+import { configEvent } from "../events/config";
+import { getActiveFunboxes } from "./funbox/list";
+import { Caret } from "../elements/caret";
+import { qsr } from "../utils/dom";
 
-interface Settings {
+type Settings = {
   wpm: number;
   cps: number;
   spc: number;
   correction: number;
   currentWordIndex: number;
   currentLetterIndex: number;
-  wordsStatus: { [key: number]: true | undefined };
+  wordsStatus: Record<number, true | undefined>;
   timeout: NodeJS.Timeout | null;
-}
+};
+
+let startTimestamp = 0;
 
 export let settings: Settings | null = null;
+
+export const caret = new Caret(qsr("#paceCaret"), Config.paceCaretStyle);
 
 let lastTestWpm = 0;
 
@@ -31,57 +36,60 @@ export function setLastTestWpm(wpm: number): void {
   }
 }
 
-function resetCaretPosition(): void {
+export function resetCaretPosition(): void {
   if (Config.paceCaret === "off" && !TestState.isPaceRepeat) return;
-  if (!$("#paceCaret").hasClass("hidden")) {
-    $("#paceCaret").addClass("hidden");
-  }
   if (Config.mode === "zen") return;
 
-  const caret = $("#paceCaret");
-  const firstLetter = <HTMLElement>(
-    document?.querySelector("#words .word")?.querySelector("letter")
-  );
+  caret.hide();
+  caret.stopAllAnimations();
+  caret.clearMargins();
 
-  const firstLetterHeight = $(firstLetter).height();
-
-  if (firstLetter === undefined || firstLetterHeight === undefined) return;
-
-  caret.stop(true, true).animate(
-    {
-      top: firstLetter.offsetTop - firstLetterHeight / 4,
-      left: firstLetter.offsetLeft,
-    },
-    0,
-    "linear"
-  );
+  caret.goTo({
+    wordIndex: 0,
+    letterIndex: 0,
+    isLanguageRightToLeft: TestState.isLanguageRightToLeft,
+    isDirectionReversed: TestState.isDirectionReversed,
+    animate: false,
+  });
 }
 
 export async function init(): Promise<void> {
-  $("#paceCaret").addClass("hidden");
-  const mode2 = Misc.getMode2(
-    Config,
-    TestWords.randomQuote
-  ) as SharedTypes.Mode2<typeof Config.mode>;
-  let wpm;
+  caret.hide();
+  const mode2 = Misc.getMode2(Config, TestWords.currentQuote);
+  let wpm = 0;
   if (Config.paceCaret === "pb") {
-    wpm = await DB.getLocalPB(
+    wpm =
+      (
+        await DB.getLocalPB(
+          Config.mode,
+          mode2,
+          Config.punctuation,
+          Config.numbers,
+          Config.language,
+          Config.difficulty,
+          Config.lazyMode,
+          getActiveFunboxes(),
+        )
+      )?.wpm ?? 0;
+  } else if (Config.paceCaret === "tagPb") {
+    wpm = await DB.getActiveTagsPB(
       Config.mode,
       mode2,
       Config.punctuation,
+      Config.numbers,
       Config.language,
       Config.difficulty,
       Config.lazyMode,
-      Config.funbox
     );
   } else if (Config.paceCaret === "average") {
     [wpm] = await DB.getUserAverage10(
       Config.mode,
       mode2,
       Config.punctuation,
+      Config.numbers,
       Config.language,
       Config.difficulty,
-      Config.lazyMode
+      Config.lazyMode,
     );
     wpm = Math.round(wpm);
   } else if (Config.paceCaret === "daily") {
@@ -89,14 +97,15 @@ export async function init(): Promise<void> {
       Config.mode,
       mode2,
       Config.punctuation,
+      Config.numbers,
       Config.language,
       Config.difficulty,
-      Config.lazyMode
+      Config.lazyMode,
     );
     wpm = Math.round(wpm);
   } else if (Config.paceCaret === "custom") {
     wpm = Config.paceCaretCustomSpeed;
-  } else if (Config.paceCaret === "last" || TestState.isPaceRepeat === true) {
+  } else if (Config.paceCaret === "last" || TestState.isPaceRepeat) {
     wpm = lastTestWpm;
   }
   if (wpm === undefined || wpm < 1 || Number.isNaN(wpm)) {
@@ -114,29 +123,82 @@ export async function init(): Promise<void> {
     spc: spc,
     correction: 0,
     currentWordIndex: 0,
-    currentLetterIndex: -1,
+    currentLetterIndex: 0,
     wordsStatus: {},
     timeout: null,
   };
-  resetCaretPosition();
 }
 
-export function update(expectedStepEnd: number): void {
-  if (settings === null || !TestState.isActive || TestUI.resultVisible) {
+export async function update(expectedStepEnd: number): Promise<void> {
+  const currentSettings = settings;
+  if (
+    currentSettings === null ||
+    !TestState.isActive ||
+    TestState.resultVisible
+  ) {
     return;
   }
-  // if ($("#paceCaret").hasClass("hidden")) {
-  //   $("#paceCaret").removeClass("hidden");
-  // }
+
+  if (caret.isHidden()) {
+    caret.show();
+  }
+
+  incrementLetterIndex();
+
+  try {
+    const now = performance.now();
+    const absoluteStepEnd = startTimestamp + expectedStepEnd;
+    const duration = absoluteStepEnd - now;
+
+    caret.goTo({
+      wordIndex: currentSettings.currentWordIndex,
+      letterIndex: currentSettings.currentLetterIndex,
+      isLanguageRightToLeft: TestState.isLanguageRightToLeft,
+      isDirectionReversed: TestState.isDirectionReversed,
+      animate: true,
+      animationOptions: {
+        duration,
+        easing: "linear",
+      },
+    });
+
+    currentSettings.timeout = setTimeout(
+      () => {
+        if (settings !== currentSettings) return;
+        update(expectedStepEnd + (currentSettings.spc ?? 0) * 1000).catch(
+          () => {
+            if (settings === currentSettings) settings = null;
+          },
+        );
+      },
+      Math.max(0, duration),
+    );
+  } catch (e) {
+    console.error(e);
+    caret.hide();
+    return;
+  }
+}
+
+export function reset(): void {
+  if (settings?.timeout !== null && settings?.timeout !== undefined) {
+    clearTimeout(settings.timeout);
+  }
+  settings = null;
+  startTimestamp = 0;
+}
+
+function incrementLetterIndex(): void {
+  if (settings === null) return;
 
   try {
     settings.currentLetterIndex++;
     if (
       settings.currentLetterIndex >=
-      TestWords.words.get(settings.currentWordIndex).length
+      TestWords.words.get(settings.currentWordIndex).length + 1
     ) {
       //go to the next word
-      settings.currentLetterIndex = -1;
+      settings.currentLetterIndex = 0;
       settings.currentWordIndex++;
     }
     if (!Config.blindMode) {
@@ -159,7 +221,7 @@ export function update(expectedStepEnd: number): void {
             TestWords.words.get(settings.currentWordIndex).length
           ) {
             //go to the next word
-            settings.currentLetterIndex = -1;
+            settings.currentLetterIndex = 0;
             settings.currentWordIndex++;
           }
           settings.correction--;
@@ -169,131 +231,43 @@ export function update(expectedStepEnd: number): void {
   } catch (e) {
     //out of words
     settings = null;
-    $("#paceCaret").addClass("hidden");
+    console.log("pace caret out of words");
+    caret.hide();
     return;
   }
-
-  try {
-    const caret = $("#paceCaret");
-    let currentLetter;
-    let newTop;
-    let newLeft;
-    try {
-      const newIndex =
-        settings.currentWordIndex -
-        (TestWords.words.currentIndex - TestUI.currentWordElementIndex);
-      const word = document.querySelectorAll("#words .word")[
-        newIndex
-      ] as HTMLElement;
-      if (settings.currentLetterIndex === -1) {
-        currentLetter = <HTMLElement>word.querySelectorAll("letter")[0];
-      } else {
-        currentLetter = <HTMLElement>(
-          word.querySelectorAll("letter")[settings.currentLetterIndex]
-        );
-      }
-
-      const currentLetterHeight = $(currentLetter).height(),
-        currentLetterWidth = $(currentLetter).width(),
-        caretWidth = caret.width();
-
-      if (
-        currentLetterHeight === undefined ||
-        currentLetterWidth === undefined ||
-        caretWidth === undefined
-      ) {
-        throw ``;
-      }
-
-      newTop =
-        currentLetter.offsetTop -
-        Config.fontSize * Misc.convertRemToPixels(1) * 0.1;
-      newLeft;
-      if (settings.currentLetterIndex === -1) {
-        newLeft = currentLetter.offsetLeft;
-      } else {
-        newLeft =
-          currentLetter.offsetLeft + currentLetterWidth - caretWidth / 2;
-      }
-      caret.removeClass("hidden");
-    } catch (e) {
-      caret.addClass("hidden");
-    }
-
-    const duration = expectedStepEnd - performance.now();
-
-    if (newTop !== undefined) {
-      let smoothlinescroll = $("#words .smoothScroller").height();
-      if (smoothlinescroll === undefined) smoothlinescroll = 0;
-
-      $("#paceCaret").css({
-        top: newTop - smoothlinescroll,
-      });
-
-      if (Config.smoothCaret !== "off") {
-        caret.stop(true, true).animate(
-          {
-            left: newLeft,
-          },
-          SlowTimer.get() ? 0 : duration,
-          "linear"
-        );
-      } else {
-        caret.stop(true, true).animate(
-          {
-            left: newLeft,
-          },
-          0,
-          "linear"
-        );
-      }
-    }
-    settings.timeout = setTimeout(() => {
-      try {
-        update(expectedStepEnd + (settings?.spc ?? 0) * 1000);
-      } catch (e) {
-        settings = null;
-      }
-    }, duration);
-  } catch (e) {
-    console.error(e);
-    $("#paceCaret").addClass("hidden");
-  }
-}
-
-export function reset(): void {
-  if (settings !== null && settings.timeout !== null) {
-    clearTimeout(settings.timeout);
-  }
-  settings = null;
 }
 
 export function handleSpace(correct: boolean, currentWord: string): void {
   if (correct) {
     if (
       settings !== null &&
-      settings.wordsStatus[TestWords.words.currentIndex] === true &&
+      settings.wordsStatus[TestState.activeWordIndex] === true &&
       !Config.blindMode
     ) {
-      settings.wordsStatus[TestWords.words.currentIndex] = undefined;
+      settings.wordsStatus[TestState.activeWordIndex] = undefined;
       settings.correction -= currentWord.length + 1;
     }
   } else {
     if (
       settings !== null &&
-      settings.wordsStatus[TestWords.words.currentIndex] === undefined &&
+      settings.wordsStatus[TestState.activeWordIndex] === undefined &&
       !Config.blindMode
     ) {
-      settings.wordsStatus[TestWords.words.currentIndex] = true;
+      settings.wordsStatus[TestState.activeWordIndex] = true;
       settings.correction += currentWord.length + 1;
     }
   }
 }
 
 export function start(): void {
-  update(performance.now() + (settings?.spc ?? 0) * 1000);
+  const now = performance.now();
+  startTimestamp = now;
+  void update((settings?.spc ?? 0) * 1000);
 }
 
-ConfigEvent.subscribe((eventKey) => {
-  if (eventKey === "paceCaret") init();
+configEvent.subscribe(({ key }) => {
+  if (key === "paceCaret") void init();
+  if (key === "paceCaretStyle") {
+    caret.setStyle(Config.paceCaretStyle);
+  }
 });

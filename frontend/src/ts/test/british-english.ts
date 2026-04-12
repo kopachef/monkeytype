@@ -1,68 +1,58 @@
-import Config from "../config";
-import { capitalizeFirstLetterOfEachWord } from "../utils/misc";
-import * as CustomText from "../test/custom-text";
-
-interface BritishEnglishReplacement {
-  0: string;
-  1: string;
-  2?: string[];
-}
-
-let list: BritishEnglishReplacement[] = [];
-
-export async function getList(): Promise<BritishEnglishReplacement[]> {
-  if (list.length === 0) {
-    return $.getJSON("languages/britishenglish.json", function (data) {
-      list = data;
-      return list;
-    });
-  } else {
-    return list;
-  }
-}
+import { Config } from "../config/store";
+import britishEnglishReplacements from "../constants/british-english";
+import { capitalizeFirstLetterOfEachWord } from "../utils/strings";
 
 export async function replace(
   word: string,
-  previousWord: string
+  previousWord: string,
 ): Promise<string> {
-  const list = await getList();
+  // Convert American-style double quotes to British-style single quotes
+  if (word.includes('"')) {
+    word = word.replace(/"/g, "'");
+  }
 
   if (word.includes("-")) {
     //this handles hyphenated words (for example "cream-colored") to make sure
     //we don't have to add every possible combination to the list
     return (
       await Promise.all(
-        word.split("-").map(async (w) => replace(w, previousWord))
+        word.split("-").map(async (w) => replace(w, previousWord)),
       )
     ).join("-");
   } else {
-    const replacement = list.find((a) =>
-      word.match(RegExp(`^([\\W]*${a[0]}[\\W]*)$`, "gi"))
-    );
-
-    if (!replacement) return word;
-
+    const cleanedWord = word.replace(/^[\W]+|[\W]+$/g, "").toLowerCase();
     if (
-      (Config.mode === "quote" ||
-        (Config.mode === "custom" &&
-          !CustomText.isTimeRandom &&
-          !CustomText.isWordRandom &&
-          !CustomText.isSectionRandom)) &&
-      replacement[2]?.includes(previousWord)
+      !Object.prototype.hasOwnProperty.call(
+        britishEnglishReplacements,
+        cleanedWord,
+      )
     ) {
+      return word;
+    }
+    const rule = britishEnglishReplacements[cleanedWord];
+
+    if (rule === undefined) return word;
+
+    const [britishWord, exceptions] =
+      typeof rule === "string"
+        ? [rule, []]
+        : [rule.britishWord, rule.exceptPreviousWords];
+
+    if (Config.mode === "quote" && exceptions.includes(previousWord)) {
       return word;
     }
 
     return word.replace(
-      RegExp(`^(?:([\\W]*)(${replacement[0]})([\\W]*))$`, "gi"),
+      RegExp(`^(?:([\\W]*)(${cleanedWord})([\\W]*))$`, "gi"),
       (_, $1, $2, $3) =>
         $1 +
-        ($2.charAt(0) === $2.charAt(0).toUpperCase()
-          ? $2 === $2.toUpperCase()
-            ? replacement[1].toUpperCase()
-            : capitalizeFirstLetterOfEachWord(replacement[1])
-          : replacement[1]) +
-        $3
+        // oxlint-disable-next-line typescript/prefer-string-starts-ends-with
+        (($2 as string).charAt(0) === ($2 as string).charAt(0).toUpperCase()
+          ? $2 === ($2 as string).toUpperCase()
+            ? britishWord.toUpperCase()
+            : capitalizeFirstLetterOfEachWord(britishWord)
+          : britishWord) +
+        $3,
     );
   }
 }

@@ -1,16 +1,15 @@
+import { MonkeyMail } from "@monkeytype/schemas/users";
 import { v4 } from "uuid";
 
-type MonkeyMailOptions = Partial<Omit<MonkeyTypes.MonkeyMail, "id" | "read">>;
+type MonkeyMailOptions = Partial<Omit<MonkeyMail, "id" | "read">>;
 
-export function buildMonkeyMail(
-  options: MonkeyMailOptions
-): MonkeyTypes.MonkeyMail {
+export function buildMonkeyMail(options: MonkeyMailOptions): MonkeyMail {
   return {
     id: v4(),
-    subject: options.subject || "",
-    body: options.body || "",
-    timestamp: options.timestamp || Date.now(),
+    subject: options.subject ?? "",
+    body: options.body ?? "",
+    timestamp: options.timestamp ?? Date.now(),
     read: false,
-    rewards: options.rewards || [],
+    rewards: options.rewards ?? [],
   };
 }

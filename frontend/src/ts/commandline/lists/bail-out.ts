@@ -1,22 +1,22 @@
-import Config from "../../config";
+import { Config } from "../../config/store";
 import * as CustomText from "../../test/custom-text";
 import * as TestLogic from "../../test/test-logic";
 import * as TestState from "../../test/test-state";
-import * as CustomTextState from "../../states/custom-text-name";
+import * as CustomTextState from "../../legacy-states/custom-text-name";
+import { Command, CommandsSubgroup } from "../types";
 
 function canBailOut(): boolean {
   return (
     (Config.mode === "custom" && CustomTextState.isCustomTextLong() === true) ||
     (Config.mode === "custom" &&
-      CustomText.isWordRandom &&
-      (CustomText.word >= 5000 || CustomText.word === 0)) ||
+      (CustomText.getLimitMode() === "word" ||
+        CustomText.getLimitMode() === "section") &&
+      (CustomText.getLimit().value >= 5000 ||
+        CustomText.getLimit().value === 0)) ||
     (Config.mode === "custom" &&
-      !CustomText.isWordRandom &&
-      !CustomText.isTimeRandom &&
-      CustomText.text.length >= 5000) ||
-    (Config.mode === "custom" &&
-      CustomText.isTimeRandom &&
-      (CustomText.time >= 3600 || CustomText.time === 0)) ||
+      CustomText.getLimitMode() === "time" &&
+      (CustomText.getLimitValue() >= 3600 ||
+        CustomText.getLimitValue() === 0)) ||
     (Config.mode === "words" && Config.words >= 5000) ||
     Config.words === 0 ||
     (Config.mode === "time" && (Config.time >= 3600 || Config.time === 0)) ||
@@ -24,7 +24,7 @@ function canBailOut(): boolean {
   );
 }
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
+const subgroup: CommandsSubgroup = {
   title: "Are you sure...",
   list: [
     {
@@ -39,7 +39,7 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
       display: "Yes, I am sure",
       exec: (): void => {
         TestState.setBailedOut(true);
-        TestLogic.finish();
+        void TestLogic.finish();
       },
       available: (): boolean => {
         return canBailOut();
@@ -48,7 +48,7 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
   ],
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "bailOut",
     display: "Bail out...",

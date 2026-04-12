@@ -1,28 +1,43 @@
 import * as DB from "../db";
-import * as ResultFilters from "../account/result-filters";
-import * as ThemeColors from "../elements/theme-colors";
+import * as ResultFilters from "../elements/account/result-filters";
 import * as ChartController from "../controllers/chart-controller";
-import Config, * as UpdateConfig from "../config";
-import * as MiniResultChart from "../account/mini-result-chart";
-import * as AllTimeStats from "../account/all-time-stats";
-import * as PbTables from "../account/pb-tables";
-import * as LoadingPage from "./loading";
+
+import { Config } from "../config/store";
+import { setConfig } from "../config/setters";
+import * as MiniResultChartModal from "../modals/mini-result-chart";
 import * as Focus from "../test/focus";
 import * as TodayTracker from "../test/today-tracker";
-import * as Notifications from "../elements/notifications";
+import {
+  showNoticeNotification,
+  showErrorNotification,
+} from "../states/notifications";
 import Page from "./page";
+import * as DateTime from "../utils/date-and-time";
 import * as Misc from "../utils/misc";
+import * as Arrays from "../utils/arrays";
+import * as Numbers from "@monkeytype/util/numbers";
 import { get as getTypingSpeedUnit } from "../utils/typing-speed-units";
-import * as Profile from "../elements/profile";
-import format from "date-fns/format";
-import * as ConnectionState from "../states/connection";
-import * as Skeleton from "../popups/skeleton";
+import { format } from "date-fns/format";
+import * as Skeleton from "../utils/skeleton";
 import type { ScaleChartOptions, LinearScaleOptions } from "chart.js";
-import * as ConfigEvent from "../observables/config-event";
-import * as ActivePage from "../states/active-page";
-import { Auth } from "../firebase";
-import * as Loader from "../elements/loader";
+import { configEvent } from "../events/config";
+import { getActivePage } from "../states/core";
+import { getAuthenticatedUser } from "../firebase";
+
+import { showLoaderBar, hideLoaderBar } from "../states/loader-bar";
 import * as ResultBatches from "../elements/result-batches";
+import Format from "../singletons/format";
+import { ChartData } from "@monkeytype/schemas/results";
+import { Mode, Mode2, Mode2Custom } from "@monkeytype/schemas/shared";
+import { ResultFiltersGroupItem } from "@monkeytype/schemas/users";
+import { findLineByLeastSquares } from "../utils/numbers";
+import defaultResultFilters from "../constants/default-result-filters";
+import { SnapshotResult } from "../constants/default-snapshot";
+import Ape from "../ape";
+import { AccountChart } from "@monkeytype/schemas/configs";
+import { SortedTableWithLimit } from "../utils/sorted-table";
+import { qs, qsa, qsr, ElementWithUtils, onDOMReady } from "../utils/dom";
+import { sendVerificationEmail } from "../auth";
 
 let filterDebug = false;
 //toggle filterdebug
@@ -33,163 +48,146 @@ export function toggleFilterDebug(): void {
   }
 }
 
-let filteredResults: SharedTypes.Result<SharedTypes.Mode>[] = [];
+let filteredResults: SnapshotResult<Mode>[] = [];
 let visibleTableLines = 0;
+let historyTable: SortedTableWithLimit<SnapshotResult<Mode>>;
 
 function loadMoreLines(lineIndex?: number): void {
-  const typingSpeedUnit = getTypingSpeedUnit(Config.typingSpeedUnit);
-  if (!filteredResults || filteredResults.length === 0) return;
+  if (filteredResults === undefined || filteredResults.length === 0) return;
   let newVisibleLines;
-  if (lineIndex && lineIndex > visibleTableLines) {
+  if (Numbers.isSafeNumber(lineIndex) && lineIndex > visibleTableLines) {
     newVisibleLines = Math.ceil(lineIndex / 10) * 10;
   } else {
     newVisibleLines = visibleTableLines + 10;
   }
-  for (let i = visibleTableLines; i < newVisibleLines; i++) {
-    const result = filteredResults[i];
-    if (!result) continue;
-    let diff = result.difficulty;
-    if (diff === undefined) {
-      diff = "normal";
-    }
 
-    let raw;
-    try {
-      raw = typingSpeedUnit.fromWpm(result.rawWpm).toFixed(2);
-      if (raw === undefined) {
-        raw = "-";
-      }
-    } catch (e) {
-      raw = "-";
-    }
+  visibleTableLines = newVisibleLines;
+  if (visibleTableLines >= filteredResults.length) {
+    qs(".pageAccount .loadMoreButton")?.hide();
+  } else {
+    qs(".pageAccount .loadMoreButton")?.show();
+  }
 
-    let icons = `<span aria-label="${result.language?.replace(
-      "_",
-      " "
-    )}" data-balloon-pos="up"><i class="fas fa-fw fa-globe-americas"></i></span>`;
+  historyTable.setLimit(newVisibleLines);
+  historyTable.updateBody();
+}
 
-    if (diff === "normal") {
-      icons += `<span aria-label="${result.difficulty}" data-balloon-pos="up"><i class="far fa-fw fa-star"></i></span>`;
-    } else if (diff === "expert") {
-      icons += `<span aria-label="${result.difficulty}" data-balloon-pos="up"><i class="fas fa-fw fa-star-half-alt"></i></span>`;
-    } else if (diff === "master") {
-      icons += `<span aria-label="${result.difficulty}" data-balloon-pos="up"><i class="fas fa-fw fa-star"></i></span>`;
-    }
+function buildResultRow(result: SnapshotResult<Mode>): HTMLTableRowElement {
+  let diff = result.difficulty ?? "normal";
 
-    if (result.punctuation) {
-      icons += `<span aria-label="punctuation" data-balloon-pos="up"><i class="fas fa-fw fa-at"></i></span>`;
-    }
+  let icons = `<span aria-label="${result.language?.replace(
+    "_",
+    " ",
+  )}" data-balloon-pos="up"><i class="fas fa-fw fa-globe-americas"></i></span>`;
 
-    if (result.numbers) {
-      icons += `<span aria-label="numbers" data-balloon-pos="up"><i class="fas fa-fw fa-hashtag"></i></span>`;
-    }
+  if (diff === "normal") {
+    icons += `<span aria-label="${result.difficulty}" data-balloon-pos="up"><i class="far fa-fw fa-star"></i></span>`;
+  } else if (diff === "expert") {
+    icons += `<span aria-label="${result.difficulty}" data-balloon-pos="up"><i class="fas fa-fw fa-star-half-alt"></i></span>`;
+  } else if (diff === "master") {
+    icons += `<span aria-label="${result.difficulty}" data-balloon-pos="up"><i class="fas fa-fw fa-star"></i></span>`;
+  }
 
-    if (result.blindMode) {
-      icons += `<span aria-label="blind mode" data-balloon-pos="up"><i class="fas fa-fw fa-eye-slash"></i></span>`;
-    }
+  if (result.punctuation) {
+    icons += `<span aria-label="punctuation" data-balloon-pos="up"><i class="fas fa-fw fa-at"></i></span>`;
+  }
 
-    if (result.lazyMode) {
-      icons += `<span aria-label="lazy mode" data-balloon-pos="up"><i class="fas fa-fw fa-couch"></i></span>`;
-    }
+  if (result.numbers) {
+    icons += `<span aria-label="numbers" data-balloon-pos="up"><i class="fas fa-fw fa-hashtag"></i></span>`;
+  }
 
-    if (result.funbox !== "none" && result.funbox !== undefined) {
-      icons += `<span aria-label="${result.funbox
-        .replace(/_/g, " ")
-        .replace(
-          /#/g,
-          ", "
-        )}" data-balloon-pos="up"><i class="fas fa-gamepad"></i></span>`;
-    }
+  if (result.blindMode) {
+    icons += `<span aria-label="blind mode" data-balloon-pos="up"><i class="fas fa-fw fa-eye-slash"></i></span>`;
+  }
 
-    if (result.chartData === undefined) {
-      icons += `<span class="miniResultChartButton" aria-label="No chart data found" data-balloon-pos="up"><i class="fas fa-chart-line"></i></span>`;
-    } else if (result.chartData === "toolong") {
-      icons += `<span class="miniResultChartButton" aria-label="Chart history is not available for long tests" data-balloon-pos="up"><i class="fas fa-chart-line"></i></span>`;
-    } else {
-      icons += `<span class="miniResultChartButton" aria-label="View graph" data-balloon-pos="up" filteredResultsId="${i}" style="opacity: 1"><i class="fas fa-chart-line"></i></span>`;
-    }
+  if (result.lazyMode) {
+    icons += `<span aria-label="lazy mode" data-balloon-pos="up"><i class="fas fa-fw fa-couch"></i></span>`;
+  }
 
-    let tagNames = "";
+  if (result.funbox !== undefined && result.funbox.length > 0) {
+    icons += `<span aria-label="${result.funbox
+      .map((it) => it.replace(/_/g, " "))
+      .join(
+        ", ",
+      )}" data-balloon-pos="up"><i class="fas fa-gamepad"></i></span>`;
+  }
 
-    if (result.tags !== undefined && result.tags.length > 0) {
-      result.tags.forEach((tag) => {
-        DB.getSnapshot()?.tags?.forEach((snaptag) => {
-          if (tag === snaptag._id) {
-            tagNames += snaptag.display + ", ";
-          }
-        });
+  if (result.chartData === "toolong" || result.testDuration > 122) {
+    icons += `<span class="miniResultChartButton disabled" aria-label="Graph history is not available for long tests" data-balloon-pos="up"><i class="fas fa-fw fa-chart-line"></i></span>`;
+  } else {
+    icons += `<span class="miniResultChartButton" aria-label="View graph" data-balloon-pos="up"><i class="fas fa-fw fa-chart-line"></i></span>`;
+  }
+
+  let tagNames = "no tags";
+
+  if (result.tags !== undefined && result.tags.length > 0) {
+    tagNames = "";
+    result.tags.forEach((tag) => {
+      DB.getSnapshot()?.tags?.forEach((snaptag) => {
+        if (tag === snaptag._id) {
+          tagNames += snaptag.display + ", ";
+        }
       });
-      tagNames = tagNames.substring(0, tagNames.length - 2);
-    }
+    });
+    tagNames = tagNames.substring(0, tagNames.length - 2);
+  }
 
-    let restags;
-    if (result.tags === undefined) {
-      restags = "[]";
-    } else {
-      restags = JSON.stringify(result.tags);
-    }
+  let restags;
+  if (result.tags === undefined) {
+    restags = "[]";
+  } else {
+    restags = JSON.stringify(result.tags);
+  }
 
-    let tagIcons = `<span id="resultEditTags" resultId="${result._id}" tags='${restags}' aria-label="no tags" data-balloon-pos="up" style="opacity: .25"><i class="fas fa-fw fa-tag"></i></span>`;
+  const isActive = result.tags !== undefined && result.tags.length > 0;
+  const icon =
+    result.tags !== undefined && result.tags.length > 1 ? "fa-tags" : "fa-tag";
 
-    if (tagNames !== "") {
-      if (result.tags !== undefined && result.tags.length > 1) {
-        tagIcons = `<span id="resultEditTags" resultId="${result._id}" tags='${restags}' aria-label="${tagNames}" data-balloon-pos="up"><i class="fas fa-fw fa-tags"></i></span>`;
-      } else {
-        tagIcons = `<span id="resultEditTags" resultId="${result._id}" tags='${restags}' aria-label="${tagNames}" data-balloon-pos="up"><i class="fas fa-fw fa-tag"></i></span>`;
-      }
-    }
+  const resultTagsButton = `<button class="textButton resultEditTagsButton ${
+    isActive ? "active" : ""
+  }" data-result-id="${
+    result._id
+  }" data-tags='${restags}' aria-label="${tagNames}" data-balloon-pos="up"><i class="fas fa-fw ${icon}"></i></button>`;
 
-    let consistency = "-";
+  let pb = "";
+  if (result.isPb) {
+    pb = '<i class="fas fa-fw fa-crown"></i>';
+  } else {
+    pb = "";
+  }
 
-    if (result.consistency) {
-      consistency = result.consistency.toFixed(2) + "%";
-    }
+  const charStats = result.charStats.join("/");
 
-    let pb = result.isPb?.toString();
-    if (pb) {
-      pb = '<i class="fas fa-fw fa-crown"></i>';
-    } else {
-      pb = "";
-    }
+  const mode2 = result.mode === "custom" ? "" : result.mode2;
 
-    const charStats = result.charStats.join("/");
+  const date = new Date(result.timestamp);
 
-    const date = new Date(result.timestamp);
-    $(".pageAccount .history table tbody").append(`
-    <tr class="resultRow" id="result-${i}">
+  const element = document.createElement("tr");
+  element.classList.add("resultRow");
+  element.dataset["id"] = result._id;
+  element.innerHTML = `
     <td>${pb}</td>
-    <td>${typingSpeedUnit.fromWpm(result.wpm).toFixed(2)}</td>
-    <td>${raw}</td>
-    <td>${result.acc.toFixed(2)}%</td>
-    <td>${consistency}</td>
+    <td>${Format.typingSpeed(result.wpm, { showDecimalPlaces: true })}</td>
+    <td>${Format.typingSpeed(result.rawWpm, { showDecimalPlaces: true })}</td>
+    <td>${Format.percentage(result.acc, { showDecimalPlaces: true })}</td>
+    <td>${Format.percentage(result.consistency, {
+      showDecimalPlaces: true,
+    })}</td>
     <td>${charStats}</td>
-    <td>${result.mode} ${result.mode2}</td>
+    <td>${result.mode} ${mode2}</td>
     <td class="infoIcons">${icons}</td>
-    <td>${tagIcons}</td>
+    <td>${resultTagsButton}</td>
     <td>${format(date, "dd MMM yyyy")}<br>
     ${format(date, "HH:mm")}
     </td>
-    </tr>`);
-  }
-  visibleTableLines = newVisibleLines;
-  if (visibleTableLines >= filteredResults.length) {
-    $(".pageAccount .loadMoreButton").addClass("hidden");
-  } else {
-    $(".pageAccount .loadMoreButton").removeClass("hidden");
-  }
-}
+    `;
 
-async function updateChartColors(): Promise<void> {
-  ChartController.accountHistory.updateColors();
-  await Misc.sleep(0);
-  ChartController.accountActivity.updateColors();
-  await Misc.sleep(0);
-  ChartController.accountHistogram.updateColors();
-  await Misc.sleep(0);
+  return element;
 }
 
 function reset(): void {
-  $(".pageAccount .history table tbody").empty();
+  historyTable.setData([]);
+  historyTable.updateBody();
 
   ChartController.accountHistogram.getDataset("count").data = [];
   ChartController.accountActivity.getDataset("count").data = [];
@@ -204,23 +202,16 @@ function reset(): void {
 }
 
 let totalSecondsFiltered = 0;
-let chartData: MonkeyTypes.HistoryChartData[] = [];
-let accChartData: MonkeyTypes.AccChartData[] = [];
+let chartData: ChartController.HistoryChartData[] = [];
+let accChartData: ChartController.AccChartData[] = [];
 
 async function fillContent(): Promise<void> {
-  LoadingPage.updateText("Displaying stats...");
-  LoadingPage.updateBar(100);
   console.log("updating account page");
-  ThemeColors.update();
-  AllTimeStats.update();
 
   const snapshot = DB.getSnapshot();
   if (!snapshot) return;
 
-  PbTables.update(snapshot.personalBests);
-  Profile.update("account", snapshot);
-
-  ResultBatches.update();
+  void ResultBatches.update();
 
   chartData = [];
   accChartData = [];
@@ -258,418 +249,423 @@ async function fillContent(): Promise<void> {
   let totalCons10 = 0;
   let consCount = 0;
 
-  interface ActivityChartData {
-    [key: number]: {
+  type ActivityChartData = Record<
+    number,
+    {
+      restarts: number;
       amount: number;
       time: number;
+      maxWpm: number;
       totalWpm: number;
-    };
-  }
+      totalAcc: number;
+      totalCon: number;
+    }
+  >;
 
   const activityChartData: ActivityChartData = {};
   const histogramChartData: number[] = [];
   const typingSpeedUnit = getTypingSpeedUnit(Config.typingSpeedUnit);
 
   filteredResults = [];
-  $(".pageAccount .history table tbody").empty();
+  qs(".pageAccount .history table tbody")?.empty();
 
-  DB.getSnapshot()?.results?.forEach(
-    (result: SharedTypes.Result<SharedTypes.Mode>) => {
-      // totalSeconds += tt;
+  DB.getSnapshot()?.results?.forEach((result) => {
+    // totalSeconds += tt;
 
-      //apply filters
-      try {
-        if (
-          !ResultFilters.getFilter("pb", result.isPb === true ? "yes" : "no")
-        ) {
-          if (filterDebug) {
-            console.log(`skipping result due to pb filter`, result);
-          }
-          return;
+    //apply filters
+    try {
+      if (!ResultFilters.getFilter("pb", result.isPb ? "yes" : "no")) {
+        if (filterDebug) {
+          console.log(`skipping result due to pb filter`, result);
         }
-
-        let resdiff = result.difficulty;
-        if (resdiff === undefined) {
-          resdiff = "normal";
-        }
-        if (!ResultFilters.getFilter("difficulty", resdiff)) {
-          if (filterDebug) {
-            console.log(`skipping result due to difficulty filter`, result);
-          }
-          return;
-        }
-        if (!ResultFilters.getFilter("mode", result.mode)) {
-          if (filterDebug) {
-            console.log(`skipping result due to mode filter`, result);
-          }
-          return;
-        }
-
-        if (result.mode === "time") {
-          let timefilter: SharedTypes.Mode2<"time"> | "custom" = "custom";
-          if (
-            ["15", "30", "60", "120"].includes(
-              `${result.mode2}` //legacy results could have a number in mode2
-            )
-          ) {
-            timefilter = `${result.mode2}` as `${number}`;
-          }
-          if (
-            !ResultFilters.getFilter(
-              "time",
-              timefilter as "custom" | "15" | "30" | "60" | "120"
-            )
-          ) {
-            if (filterDebug) {
-              console.log(`skipping result due to time filter`, result);
-            }
-            return;
-          }
-        } else if (result.mode === "words") {
-          let wordfilter: SharedTypes.Mode2Custom<"words"> = "custom";
-          if (
-            ["10", "25", "50", "100", "200"].includes(
-              `${result.mode2}` //legacy results could have a number in mode2
-            )
-          ) {
-            wordfilter = `${result.mode2}` as `${number}`;
-          }
-          if (
-            !ResultFilters.getFilter(
-              "words",
-              wordfilter as "custom" | "10" | "25" | "50" | "100"
-            )
-          ) {
-            if (filterDebug) {
-              console.log(`skipping result due to word filter`, result);
-            }
-            return;
-          }
-        }
-
-        if (result.quoteLength !== null) {
-          let filter: MonkeyTypes.QuoteModes | undefined = undefined;
-          if (result.quoteLength === 0) {
-            filter = "short";
-          } else if (result.quoteLength === 1) {
-            filter = "medium";
-          } else if (result.quoteLength === 2) {
-            filter = "long";
-          } else if (result.quoteLength === 3) {
-            filter = "thicc";
-          }
-          if (
-            filter !== undefined &&
-            !ResultFilters.getFilter("quoteLength", filter)
-          ) {
-            if (filterDebug) {
-              console.log(`skipping result due to quoteLength filter`, result);
-            }
-            return;
-          }
-        }
-
-        let langFilter = ResultFilters.getFilter(
-          "language",
-          result.language ?? "english"
-        );
-
-        if (
-          result.language === "english_expanded" &&
-          ResultFilters.getFilter("language", "english_1k")
-        ) {
-          langFilter = true;
-        }
-        if (!langFilter) {
-          if (filterDebug) {
-            console.log(`skipping result due to language filter`, result);
-          }
-          return;
-        }
-
-        let puncfilter: MonkeyTypes.Filter<"punctuation"> = "off";
-        if (result.punctuation) {
-          puncfilter = "on";
-        }
-        if (!ResultFilters.getFilter("punctuation", puncfilter)) {
-          if (filterDebug) {
-            console.log(`skipping result due to punctuation filter`, result);
-          }
-          return;
-        }
-
-        let numfilter: MonkeyTypes.Filter<"numbers"> = "off";
-        if (result.numbers) {
-          numfilter = "on";
-        }
-        if (!ResultFilters.getFilter("numbers", numfilter)) {
-          if (filterDebug) {
-            console.log(`skipping result due to numbers filter`, result);
-          }
-          return;
-        }
-
-        if (result.funbox === "none" || result.funbox === undefined) {
-          if (!ResultFilters.getFilter("funbox", "none")) {
-            if (filterDebug) {
-              console.log(`skipping result due to funbox filter`, result);
-            }
-            return;
-          }
-        } else {
-          let counter = 0;
-          for (const f of result.funbox.split("#")) {
-            if (ResultFilters.getFilter("funbox", f)) {
-              counter++;
-              break;
-            }
-          }
-          if (counter === 0) {
-            if (filterDebug) {
-              console.log(`skipping result due to funbox filter`, result);
-            }
-            return;
-          }
-        }
-
-        let tagHide = true;
-        if (result.tags === undefined || result.tags.length === 0) {
-          //no tags, show when no tag is enabled
-          if ((DB.getSnapshot()?.tags?.length ?? 0) > 0) {
-            if (ResultFilters.getFilter("tags", "none")) tagHide = false;
-          } else {
-            tagHide = false;
-          }
-        } else {
-          //tags exist
-          const validTags = DB.getSnapshot()?.tags?.map((t) => t._id);
-
-          if (validTags === undefined) return;
-
-          result.tags.forEach((tag) => {
-            //check if i even need to check tags anymore
-            if (!tagHide) return;
-            //check if tag is valid
-            if (validTags?.includes(tag)) {
-              //tag valid, check if filter is on
-              if (ResultFilters.getFilter("tags", tag)) tagHide = false;
-            } else {
-              //tag not found in valid tags, meaning probably deleted
-              if (ResultFilters.getFilter("tags", "none")) tagHide = false;
-            }
-          });
-        }
-
-        if (tagHide) {
-          if (filterDebug) {
-            console.log(`skipping result due to tag filter`, result);
-          }
-          return;
-        }
-
-        const timeSinceTest = Math.abs(result.timestamp - Date.now()) / 1000;
-
-        let datehide = true;
-
-        if (
-          ResultFilters.getFilter("date", "all") ||
-          (ResultFilters.getFilter("date", "last_day") &&
-            timeSinceTest <= 86400) ||
-          (ResultFilters.getFilter("date", "last_week") &&
-            timeSinceTest <= 604800) ||
-          (ResultFilters.getFilter("date", "last_month") &&
-            timeSinceTest <= 2592000) ||
-          (ResultFilters.getFilter("date", "last_3months") &&
-            timeSinceTest <= 7776000)
-        ) {
-          datehide = false;
-        }
-
-        if (datehide) {
-          if (filterDebug) {
-            console.log(`skipping result due to date filter`, result);
-          }
-          return;
-        }
-
-        filteredResults.push(result);
-      } catch (e) {
-        Notifications.add(
-          "Something went wrong when filtering. Resetting filters.",
-          0
-        );
-        console.log(result);
-        console.error(e);
-        ResultFilters.reset();
-        ResultFilters.updateActive();
-        update();
-      }
-      //filters done
-      //=======================================
-
-      totalEstimatedWords += Math.round(
-        (result.wpm / 60) * result.testDuration
-      );
-
-      const resultDate = new Date(result.timestamp);
-      resultDate.setSeconds(0);
-      resultDate.setMinutes(0);
-      resultDate.setHours(0);
-      resultDate.setMilliseconds(0);
-      const resultTimestamp = resultDate.getTime();
-
-      const dataForTimestamp = activityChartData[resultTimestamp];
-
-      if (dataForTimestamp !== undefined) {
-        dataForTimestamp.amount++;
-        dataForTimestamp.time +=
-          result.testDuration +
-          result.incompleteTestSeconds -
-          (result.afkDuration ?? 0);
-        dataForTimestamp.totalWpm += result.wpm;
-      } else {
-        activityChartData[resultTimestamp] = {
-          amount: 1,
-          time:
-            result.testDuration +
-            result.incompleteTestSeconds -
-            (result.afkDuration ?? 0),
-          totalWpm: result.wpm,
-        };
+        return;
       }
 
-      const bucketSize = typingSpeedUnit.histogramDataBucketSize;
-      const bucket = Math.floor(
-        Math.round(typingSpeedUnit.fromWpm(result.wpm)) / bucketSize
-      );
+      let resdiff = result.difficulty ?? "normal";
+      if (!ResultFilters.getFilter("difficulty", resdiff)) {
+        if (filterDebug) {
+          console.log(`skipping result due to difficulty filter`, result);
+        }
+        return;
+      }
+      if (!ResultFilters.getFilter("mode", result.mode)) {
+        if (filterDebug) {
+          console.log(`skipping result due to mode filter`, result);
+        }
+        return;
+      }
 
-      //grow array if needed
-      if (histogramChartData.length <= bucket) {
-        for (let i = histogramChartData.length; i <= bucket; i++) {
-          histogramChartData.push(0);
+      if (result.mode === "time") {
+        let timefilter: Mode2<"time"> | "custom" = "custom";
+        if (
+          ["15", "30", "60", "120"].includes(
+            `${result.mode2}`, //legacy results could have a number in mode2
+          )
+        ) {
+          timefilter = `${result.mode2}` as `${number}`;
+        }
+        if (
+          !ResultFilters.getFilter(
+            "time",
+            timefilter as "custom" | "15" | "30" | "60" | "120",
+          )
+        ) {
+          if (filterDebug) {
+            console.log(`skipping result due to time filter`, result);
+          }
+          return;
+        }
+      } else if (result.mode === "words") {
+        let wordfilter: Mode2Custom<"words"> = "custom";
+        if (
+          ["10", "25", "50", "100", "200"].includes(
+            `${result.mode2}`, //legacy results could have a number in mode2
+          )
+        ) {
+          wordfilter = `${result.mode2}` as `${number}`;
+        }
+        if (
+          !ResultFilters.getFilter(
+            "words",
+            wordfilter as "custom" | "10" | "25" | "50" | "100",
+          )
+        ) {
+          if (filterDebug) {
+            console.log(`skipping result due to word filter`, result);
+          }
+          return;
         }
       }
-      histogramChartData[bucket]++;
 
-      let tt = 0;
+      if (result.quoteLength !== null) {
+        let filter: keyof typeof defaultResultFilters.quoteLength | undefined =
+          undefined;
+        if (result.quoteLength === 0) {
+          filter = "short";
+        } else if (result.quoteLength === 1) {
+          filter = "medium";
+        } else if (result.quoteLength === 2) {
+          filter = "long";
+        } else if (result.quoteLength === 3) {
+          filter = "thicc";
+        }
+        if (
+          filter !== undefined &&
+          !ResultFilters.getFilter("quoteLength", filter)
+        ) {
+          if (filterDebug) {
+            console.log(`skipping result due to quoteLength filter`, result);
+          }
+          return;
+        }
+      }
+
+      let langFilter = ResultFilters.getFilter("language", result.language);
+
       if (
-        result.testDuration === undefined &&
-        result.mode2 !== "custom" &&
-        result.mode2 !== "zen"
+        //legacy value for english_1k
+        (result.language as string) === "english_expanded" &&
+        ResultFilters.getFilter("language", "english_1k")
       ) {
-        //test finished before testDuration field was introduced - estimate
-        if (result.mode === "time") {
-          tt = parseInt(result.mode2);
-        } else if (result.mode === "words") {
-          tt = (parseInt(result.mode2) / result.wpm) * 60;
+        langFilter = true;
+      }
+      if (!langFilter) {
+        if (filterDebug) {
+          console.log(`skipping result due to language filter`, result);
+        }
+        return;
+      }
+
+      let puncfilter: ResultFiltersGroupItem<"punctuation"> = "off";
+      if (result.punctuation) {
+        puncfilter = "on";
+      }
+      if (!ResultFilters.getFilter("punctuation", puncfilter)) {
+        if (filterDebug) {
+          console.log(`skipping result due to punctuation filter`, result);
+        }
+        return;
+      }
+
+      let numfilter: ResultFiltersGroupItem<"numbers"> = "off";
+      if (result.numbers) {
+        numfilter = "on";
+      }
+      if (!ResultFilters.getFilter("numbers", numfilter)) {
+        if (filterDebug) {
+          console.log(`skipping result due to numbers filter`, result);
+        }
+        return;
+      }
+
+      if (result.funbox === undefined || result.funbox.length === 0) {
+        if (!ResultFilters.getFilter("funbox", "none")) {
+          if (filterDebug) {
+            console.log(`skipping result due to funbox filter`, result);
+          }
+          return;
         }
       } else {
-        tt = parseFloat(result.testDuration as unknown as string); //legacy results could have a string here
-      }
-      if (result.incompleteTestSeconds !== undefined) {
-        tt += result.incompleteTestSeconds;
-      } else if (result.restartCount !== undefined && result.restartCount > 0) {
-        tt += (tt / 4) * result.restartCount;
-      }
-
-      // if (result.incompleteTestSeconds !== undefined) {
-      //   tt += result.incompleteTestSeconds;
-      // } else if (result.restartCount !== undefined && result.restartCount > 0) {
-      //   tt += (tt / 4) * result.restartCount;
-      // }
-      totalSecondsFiltered += tt;
-
-      if (last10 < 10) {
-        last10++;
-        wpmLast10total += result.wpm;
-        totalAcc10 += result.acc;
-        result.consistency !== undefined
-          ? (totalCons10 += result.consistency)
-          : 0;
-      }
-      testCount++;
-
-      if (result.consistency !== undefined) {
-        consCount++;
-        totalCons += result.consistency;
-        if (result.consistency > topCons) {
-          topCons = result.consistency;
+        let counter = 0;
+        for (const f of result.funbox) {
+          if (ResultFilters.getFilter("funbox", f)) {
+            counter++;
+            break;
+          }
+        }
+        if (counter === 0) {
+          if (filterDebug) {
+            console.log(`skipping result due to funbox filter`, result);
+          }
+          return;
         }
       }
 
-      if (result.rawWpm !== null) {
-        if (rawWpm.last10Count < 10) {
-          rawWpm.last10Count++;
-          rawWpm.last10Total += result.rawWpm;
+      let tagHide = true;
+      if (result.tags === undefined || result.tags.length === 0) {
+        //no tags, show when no tag is enabled
+        if ((DB.getSnapshot()?.tags?.length ?? 0) > 0) {
+          if (ResultFilters.getFilter("tags", "none")) tagHide = false;
+        } else {
+          tagHide = false;
         }
-        rawWpm.total += result.rawWpm;
-        rawWpm.count++;
-        if (result.rawWpm > rawWpm.max) {
-          rawWpm.max = result.rawWpm;
+      } else {
+        //tags exist
+        const validTags = DB.getSnapshot()?.tags?.map((t) => t._id);
+
+        if (validTags === undefined) return;
+
+        result.tags.forEach((tag) => {
+          //check if i even need to check tags anymore
+          if (!tagHide) return;
+          //check if tag is valid
+          if (validTags?.includes(tag)) {
+            //tag valid, check if filter is on
+            if (ResultFilters.getFilter("tags", tag)) tagHide = false;
+          } else {
+            //tag not found in valid tags, meaning probably deleted
+            if (ResultFilters.getFilter("tags", "none")) tagHide = false;
+          }
+        });
+      }
+
+      if (tagHide) {
+        if (filterDebug) {
+          console.log(`skipping result due to tag filter`, result);
         }
+        return;
       }
 
-      if (result.acc > topAcc) {
-        topAcc = result.acc;
+      const timeSinceTest = Math.abs(result.timestamp - Date.now()) / 1000;
+
+      let datehide = true;
+
+      if (
+        ResultFilters.getFilter("date", "all") ||
+        (ResultFilters.getFilter("date", "last_day") &&
+          timeSinceTest <= 86400) ||
+        (ResultFilters.getFilter("date", "last_week") &&
+          timeSinceTest <= 604800) ||
+        (ResultFilters.getFilter("date", "last_month") &&
+          timeSinceTest <= 2592000) ||
+        (ResultFilters.getFilter("date", "last_3months") &&
+          timeSinceTest <= 7776000)
+      ) {
+        datehide = false;
       }
 
-      totalAcc += result.acc;
-
-      if (result.restartCount !== undefined) {
-        testRestarts += result.restartCount;
-      }
-
-      chartData.push({
-        x: filteredResults.length,
-        y: Misc.roundTo2(typingSpeedUnit.fromWpm(result.wpm)),
-        wpm: Misc.roundTo2(typingSpeedUnit.fromWpm(result.wpm)),
-        acc: result.acc,
-        mode: result.mode,
-        mode2: result.mode2,
-        punctuation: result.punctuation as boolean,
-        language: result.language,
-        timestamp: result.timestamp,
-        difficulty: result.difficulty,
-        raw: Misc.roundTo2(typingSpeedUnit.fromWpm(result.rawWpm)),
-        isPb: result.isPb ?? false,
-      });
-
-      wpmChartData.push(result.wpm);
-
-      accChartData.push({
-        x: filteredResults.length,
-        y: result.acc,
-        errorRate: 100 - result.acc,
-      });
-
-      if (result.wpm > topWpm) {
-        const puncsctring = result.punctuation ? ",<br>with punctuation" : "";
-        const numbsctring = result.numbers
-          ? ",<br> " + (result.punctuation ? "&" : "") + "with numbers"
-          : "";
-        topWpm = result.wpm;
-        if (result.mode === "custom") topMode = result.mode;
-        else {
-          topMode =
-            result.mode + " " + result.mode2 + puncsctring + numbsctring;
+      if (datehide) {
+        if (filterDebug) {
+          console.log(`skipping result due to date filter`, result);
         }
+        return;
       }
 
-      totalWpm += result.wpm;
+      filteredResults.push(result);
+    } catch (e) {
+      showNoticeNotification(
+        "Something went wrong when filtering. Resetting filters.",
+      );
+      console.log(result);
+      console.error(e);
+      ResultFilters.reset();
+      ResultFilters.updateActive();
+      void update();
+      return;
     }
-  );
+    //filters done
+    //=======================================
 
-  $(".pageAccount .group.history table thead tr td:nth-child(2)").text(
-    Config.typingSpeedUnit
+    totalEstimatedWords += Math.round((result.wpm / 60) * result.testDuration);
+
+    const resultDate = new Date(result.timestamp);
+    resultDate.setSeconds(0);
+    resultDate.setMinutes(0);
+    resultDate.setHours(0);
+    resultDate.setMilliseconds(0);
+    const resultTimestamp = resultDate.getTime();
+
+    const dataForTimestamp = activityChartData[resultTimestamp];
+
+    if (dataForTimestamp !== undefined) {
+      dataForTimestamp.amount++;
+      dataForTimestamp.restarts += result.restartCount ?? 0;
+      dataForTimestamp.time +=
+        result.testDuration +
+        (result.incompleteTestSeconds ?? 0) -
+        (result.afkDuration ?? 0);
+      if (result.wpm > dataForTimestamp.maxWpm) {
+        dataForTimestamp.maxWpm = result.wpm;
+      }
+      dataForTimestamp.totalWpm += result.wpm;
+      dataForTimestamp.totalAcc += result.acc;
+      dataForTimestamp.totalCon += result.consistency ?? 0;
+    } else {
+      activityChartData[resultTimestamp] = {
+        amount: 1,
+        restarts: result.restartCount ?? 0,
+        time:
+          result.testDuration +
+          (result.incompleteTestSeconds ?? 0) -
+          (result.afkDuration ?? 0),
+        maxWpm: result.wpm,
+        totalWpm: result.wpm,
+        totalAcc: result.acc,
+        totalCon: result.consistency ?? 0,
+      };
+    }
+
+    const bucketSize = typingSpeedUnit.histogramDataBucketSize;
+    const bucket = Math.floor(
+      Math.round(typingSpeedUnit.fromWpm(result.wpm)) / bucketSize,
+    );
+
+    //grow array if needed
+    if (histogramChartData.length <= bucket) {
+      for (let i = histogramChartData.length; i <= bucket; i++) {
+        histogramChartData.push(0);
+      }
+    }
+    (histogramChartData[bucket] as number) += 1;
+
+    let tt = 0;
+    if (
+      result.testDuration === undefined &&
+      result.mode2 !== "custom" &&
+      result.mode2 !== "zen"
+    ) {
+      //test finished before testDuration field was introduced - estimate
+      if (result.mode === "time") {
+        tt = parseInt(result.mode2);
+      } else if (result.mode === "words") {
+        tt = (parseInt(result.mode2) / result.wpm) * 60;
+      }
+    } else {
+      tt = parseFloat(result.testDuration as unknown as string); //legacy results could have a string here
+    }
+    if (result.incompleteTestSeconds !== undefined) {
+      tt += result.incompleteTestSeconds;
+    } else if (result.restartCount !== undefined && result.restartCount > 0) {
+      tt += (tt / 4) * result.restartCount;
+    }
+
+    // if (result.incompleteTestSeconds !== undefined) {
+    //   tt += result.incompleteTestSeconds;
+    // } else if (result.restartCount !== undefined && result.restartCount > 0) {
+    //   tt += (tt / 4) * result.restartCount;
+    // }
+    totalSecondsFiltered += tt;
+
+    if (last10 < 10) {
+      last10++;
+      wpmLast10total += result.wpm;
+      totalAcc10 += result.acc;
+      if (result.consistency !== undefined) {
+        totalCons10 += result.consistency;
+      }
+    }
+    testCount++;
+
+    if (result.consistency !== undefined) {
+      consCount++;
+      totalCons += result.consistency;
+      if (result.consistency > topCons) {
+        topCons = result.consistency;
+      }
+    }
+
+    if (result.rawWpm !== null) {
+      if (rawWpm.last10Count < 10) {
+        rawWpm.last10Count++;
+        rawWpm.last10Total += result.rawWpm;
+      }
+      rawWpm.total += result.rawWpm;
+      rawWpm.count++;
+      if (result.rawWpm > rawWpm.max) {
+        rawWpm.max = result.rawWpm;
+      }
+    }
+
+    if (result.acc > topAcc) {
+      topAcc = result.acc;
+    }
+
+    totalAcc += result.acc;
+
+    if (result.restartCount !== undefined) {
+      testRestarts += result.restartCount;
+    }
+
+    chartData.push({
+      x: filteredResults.length,
+      y: Numbers.roundTo2(typingSpeedUnit.fromWpm(result.wpm)),
+      wpm: Numbers.roundTo2(typingSpeedUnit.fromWpm(result.wpm)),
+      acc: result.acc,
+      mode: result.mode,
+      mode2: result.mode2,
+      punctuation: result.punctuation,
+      language: result.language,
+      timestamp: result.timestamp,
+      difficulty: result.difficulty,
+      raw: Numbers.roundTo2(typingSpeedUnit.fromWpm(result.rawWpm)),
+      isPb: result.isPb ?? false,
+    });
+
+    wpmChartData.push(result.wpm);
+
+    accChartData.push({
+      x: filteredResults.length,
+      y: result.acc,
+      errorRate: 100 - result.acc,
+    });
+
+    if (result.wpm > topWpm) {
+      topWpm = result.wpm;
+      if (result.mode === "custom") {
+        topMode = result.mode;
+      } else {
+        const puncsctring = result.punctuation ? ",<br>with punctuation" : "";
+        const numbsctring = result.numbers ? ",<br>with numbers" : "";
+        topMode = result.mode + " " + result.mode2 + puncsctring + numbsctring;
+      }
+    }
+
+    totalWpm += result.wpm;
+  });
+
+  historyTable.setData(filteredResults);
+
+  qs(".pageAccount .group.history table thead tr td:nth-child(2)")?.setText(
+    Config.typingSpeedUnit,
   );
 
   await Misc.sleep(0);
   loadMoreLines();
   ////////
 
-  const activityChartData_timeAndAmount: MonkeyTypes.ActivityChartDataPoint[] =
+  const activityChartData_timeAndAmount: ChartController.ActivityChartDataPoint[] =
     [];
-  const activityChartData_avgWpm: MonkeyTypes.ActivityChartDataPoint[] = [];
+  const activityChartData_avgWpm: ChartController.ActivityChartDataPoint[] = [];
   const wpmStepSize = typingSpeedUnit.historyStepSize;
 
   // let lastTimestamp = 0;
@@ -683,14 +679,18 @@ async function fillContent(): Promise<void> {
       x: dateInt,
       y: dataPoint.time / 60,
       amount: dataPoint.amount,
+      restarts: dataPoint.restarts,
+      maxWpm: Numbers.roundTo2(typingSpeedUnit.fromWpm(dataPoint.maxWpm)),
+      avgWpm: Numbers.roundTo2(dataPoint.totalWpm / dataPoint.amount),
+      avgAcc: Numbers.roundTo2(dataPoint.totalAcc / dataPoint.amount),
+      avgCon: Numbers.roundTo2(dataPoint.totalCon / dataPoint.amount),
     });
     activityChartData_avgWpm.push({
       x: dateInt,
-      y: Misc.roundTo2(
-        typingSpeedUnit.fromWpm(dataPoint.totalWpm) / dataPoint.amount
+      y: Numbers.roundTo2(
+        typingSpeedUnit.fromWpm(dataPoint.totalWpm) / dataPoint.amount,
       ),
     });
-    // lastTimestamp = date;
   }
 
   const accountActivityScaleOptions = (
@@ -743,7 +743,7 @@ async function fillContent(): Promise<void> {
     const pb: { x: number; y: number }[] = [];
 
     for (let i = chartData.length - 1; i >= 0; i--) {
-      const a = chartData[i] as MonkeyTypes.HistoryChartData;
+      const a = chartData[i] as ChartController.HistoryChartData;
       if (a.y > currentPb) {
         currentPb = a.y;
         pb.push(a);
@@ -753,7 +753,7 @@ async function fillContent(): Promise<void> {
     // add last point to pb
     pb.push({
       x: 1,
-      y: Misc.lastElementFromArray(pb)?.y as number,
+      y: Arrays.lastElementFromArray(pb)?.y as number,
     });
 
     const avgTen = [];
@@ -835,195 +835,115 @@ async function fillContent(): Promise<void> {
     ChartController.accountHistory.getScale("wpmAvgHundred").min = 0;
   }
 
-  if (!chartData || chartData.length === 0) {
-    $(".pageAccount .group.noDataError").removeClass("hidden");
-    $(".pageAccount .group.chart").addClass("hidden");
-    $(".pageAccount .group.dailyActivityChart").addClass("hidden");
-    $(".pageAccount .group.histogramChart").addClass("hidden");
-    $(".pageAccount .group.aboveHistory").addClass("hidden");
-    $(".pageAccount .group.history").addClass("hidden");
-    $(".pageAccount .triplegroup.stats").addClass("hidden");
-    $(".pageAccount .group.estimatedWordsTyped").addClass("hidden");
+  if (chartData === undefined || chartData.length === 0) {
+    qs(".pageAccount .group.noDataError")?.show();
+    qs(".pageAccount .group.chart")?.hide();
+    qs(".pageAccount .group.dailyActivityChart")?.hide();
+    qs(".pageAccount .group.histogramChart")?.hide();
+    qs(".pageAccount .group.aboveHistory")?.hide();
+    qs(".pageAccount .group.history")?.hide();
+    qs(".pageAccount .triplegroup.stats")?.hide();
+    qs(".pageAccount .group.estimatedWordsTyped")?.hide();
   } else {
-    $(".pageAccount .group.noDataError").addClass("hidden");
-    $(".pageAccount .group.chart").removeClass("hidden");
-    $(".pageAccount .group.dailyActivityChart").removeClass("hidden");
-    $(".pageAccount .group.histogramChart").removeClass("hidden");
-    $(".pageAccount .group.aboveHistory").removeClass("hidden");
-    $(".pageAccount .group.history").removeClass("hidden");
-    $(".pageAccount .triplegroup.stats").removeClass("hidden");
-    $(".pageAccount .group.estimatedWordsTyped").removeClass("hidden");
+    qs(".pageAccount .group.noDataError")?.hide();
+    qs(".pageAccount .group.chart")?.show();
+    qs(".pageAccount .group.dailyActivityChart")?.show();
+    qs(".pageAccount .group.histogramChart")?.show();
+    qs(".pageAccount .group.aboveHistory")?.show();
+    qs(".pageAccount .group.history")?.show();
+    qs(".pageAccount .triplegroup.stats")?.show();
+    qs(".pageAccount .group.estimatedWordsTyped")?.show();
   }
 
-  $(".pageAccount .timeTotalFiltered .val").text(
-    Misc.secondsToString(Math.round(totalSecondsFiltered), true, true)
+  qs(".pageAccount .timeTotalFiltered .val")?.setText(
+    DateTime.secondsToString(Math.round(totalSecondsFiltered), true, true),
   );
-
-  let highestSpeed: number | string = typingSpeedUnit.fromWpm(topWpm);
-
-  if (Config.alwaysShowDecimalPlaces) {
-    highestSpeed = Misc.roundTo2(highestSpeed).toFixed(2);
-  } else {
-    highestSpeed = Math.round(highestSpeed);
-  }
 
   const speedUnit = Config.typingSpeedUnit;
 
-  $(".pageAccount .highestWpm .title").text(`highest ${speedUnit}`);
-  $(".pageAccount .highestWpm .val").text(highestSpeed);
+  qs(".pageAccount .highestWpm .title")?.setText(`highest ${speedUnit}`);
+  qs(".pageAccount .highestWpm .val")?.setText(Format.typingSpeed(topWpm));
 
-  let averageSpeed: number | string = typingSpeedUnit.fromWpm(totalWpm);
-  if (Config.alwaysShowDecimalPlaces) {
-    averageSpeed = Misc.roundTo2(averageSpeed / testCount).toFixed(2);
-  } else {
-    averageSpeed = Math.round(averageSpeed / testCount);
-  }
-
-  $(".pageAccount .averageWpm .title").text(`average ${speedUnit}`);
-  $(".pageAccount .averageWpm .val").text(averageSpeed);
-
-  let averageSpeedLast10: number | string =
-    typingSpeedUnit.fromWpm(wpmLast10total);
-  if (Config.alwaysShowDecimalPlaces) {
-    averageSpeedLast10 = Misc.roundTo2(averageSpeedLast10 / last10).toFixed(2);
-  } else {
-    averageSpeedLast10 = Math.round(averageSpeedLast10 / last10);
-  }
-
-  $(".pageAccount .averageWpm10 .title").text(
-    `average ${speedUnit} (last 10 tests)`
+  qs(".pageAccount .averageWpm .title")?.setText(`average ${speedUnit}`);
+  qs(".pageAccount .averageWpm .val")?.setText(
+    Format.typingSpeed(totalWpm / testCount),
   );
-  $(".pageAccount .averageWpm10 .val").text(averageSpeedLast10);
 
-  let highestRawSpeed: number | string = typingSpeedUnit.fromWpm(rawWpm.max);
-  if (Config.alwaysShowDecimalPlaces) {
-    highestRawSpeed = Misc.roundTo2(highestRawSpeed).toFixed(2);
-  } else {
-    highestRawSpeed = Math.round(highestRawSpeed);
-  }
-
-  $(".pageAccount .highestRaw .title").text(`highest raw ${speedUnit}`);
-  $(".pageAccount .highestRaw .val").text(highestRawSpeed);
-
-  let averageRawSpeed: number | string = typingSpeedUnit.fromWpm(rawWpm.total);
-  if (Config.alwaysShowDecimalPlaces) {
-    averageRawSpeed = Misc.roundTo2(averageRawSpeed / rawWpm.count).toFixed(2);
-  } else {
-    averageRawSpeed = Math.round(averageRawSpeed / rawWpm.count);
-  }
-
-  $(".pageAccount .averageRaw .title").text(`average raw ${speedUnit}`);
-  $(".pageAccount .averageRaw .val").text(averageRawSpeed);
-
-  let averageRawSpeedLast10: number | string = typingSpeedUnit.fromWpm(
-    rawWpm.last10Total
+  qs(".pageAccount .averageWpm10 .title")?.setText(
+    `average ${speedUnit} (last 10 tests)`,
   );
-  if (Config.alwaysShowDecimalPlaces) {
-    averageRawSpeedLast10 = Misc.roundTo2(
-      averageRawSpeedLast10 / rawWpm.last10Count
-    ).toFixed(2);
+  qs(".pageAccount .averageWpm10 .val")?.setText(
+    Format.typingSpeed(wpmLast10total / last10),
+  );
+
+  qs(".pageAccount .highestRaw .title")?.setText(`highest raw ${speedUnit}`);
+  qs(".pageAccount .highestRaw .val")?.setText(Format.typingSpeed(rawWpm.max));
+
+  qs(".pageAccount .averageRaw .title")?.setText(`average raw ${speedUnit}`);
+  qs(".pageAccount .averageRaw .val")?.setText(
+    Format.typingSpeed(rawWpm.total / rawWpm.count),
+  );
+
+  qs(".pageAccount .averageRaw10 .title")?.setText(
+    `average raw ${speedUnit} (last 10 tests)`,
+  );
+  qs(".pageAccount .averageRaw10 .val")?.setText(
+    Format.typingSpeed(rawWpm.last10Total / rawWpm.last10Count),
+  );
+
+  qs(".pageAccount .highestWpm .mode")?.setHtml(topMode);
+  qs(".pageAccount .testsTaken .val")?.setText(testCount.toString());
+
+  qs(".pageAccount .highestAcc .val")?.setText(Format.accuracy(topAcc));
+  qs(".pageAccount .avgAcc .val")?.setText(
+    Format.accuracy(totalAcc / testCount),
+  );
+  qs(".pageAccount .avgAcc10 .val")?.setText(
+    Format.accuracy(totalAcc10 / last10),
+  );
+
+  if (totalCons === 0 || totalCons === undefined) {
+    qs(".pageAccount .avgCons .val")?.setText("-");
+    qs(".pageAccount .avgCons10 .val")?.setText("-");
   } else {
-    averageRawSpeedLast10 = Math.round(
-      averageRawSpeedLast10 / rawWpm.last10Count
+    qs(".pageAccount .highestCons .val")?.setText(Format.percentage(topCons));
+
+    qs(".pageAccount .avgCons .val")?.setText(
+      Format.percentage(totalCons / consCount),
+    );
+
+    qs(".pageAccount .avgCons10 .val")?.setText(
+      Format.percentage(totalCons10 / Math.min(last10, consCount)),
     );
   }
 
-  $(".pageAccount .averageRaw10 .title").text(
-    `average raw ${speedUnit} (last 10 tests)`
-  );
-  $(".pageAccount .averageRaw10 .val").text(averageRawSpeedLast10);
-
-  $(".pageAccount .highestWpm .mode").html(topMode);
-  $(".pageAccount .testsTaken .val").text(testCount);
-
-  let highestAcc: string | number = topAcc;
-  if (Config.alwaysShowDecimalPlaces) {
-    highestAcc = Misc.roundTo2(highestAcc).toFixed(2);
-  } else {
-    highestAcc = Math.floor(highestAcc);
-  }
-
-  $(".pageAccount .highestAcc .val").text(highestAcc + "%");
-
-  let averageAcc: number | string = totalAcc;
-  if (Config.alwaysShowDecimalPlaces) {
-    averageAcc = Misc.roundTo2(averageAcc / testCount);
-  } else {
-    averageAcc = Math.floor(averageAcc / testCount);
-  }
-
-  $(".pageAccount .avgAcc .val").text(averageAcc + "%");
-
-  let averageAccLast10: number | string = totalAcc10;
-  if (Config.alwaysShowDecimalPlaces) {
-    averageAccLast10 = Misc.roundTo2(averageAccLast10 / last10);
-  } else {
-    averageAccLast10 = Math.floor(averageAccLast10 / last10);
-  }
-
-  $(".pageAccount .avgAcc10 .val").text(averageAccLast10 + "%");
-
-  if (totalCons === 0 || totalCons === undefined) {
-    $(".pageAccount .avgCons .val").text("-");
-    $(".pageAccount .avgCons10 .val").text("-");
-  } else {
-    let highestCons: number | string = topCons;
-    if (Config.alwaysShowDecimalPlaces) {
-      highestCons = Misc.roundTo2(highestCons).toFixed(2);
-    } else {
-      highestCons = Math.round(highestCons);
-    }
-
-    $(".pageAccount .highestCons .val").text(highestCons + "%");
-
-    let averageCons: number | string = totalCons;
-    if (Config.alwaysShowDecimalPlaces) {
-      averageCons = Misc.roundTo2(averageCons / consCount).toFixed(2);
-    } else {
-      averageCons = Math.round(averageCons / consCount);
-    }
-
-    $(".pageAccount .avgCons .val").text(averageCons + "%");
-
-    let averageConsLast10: number | string = totalCons10;
-    if (Config.alwaysShowDecimalPlaces) {
-      averageConsLast10 = Misc.roundTo2(
-        averageConsLast10 / Math.min(last10, consCount)
-      ).toFixed(2);
-    } else {
-      averageConsLast10 = Math.round(
-        averageConsLast10 / Math.min(last10, consCount)
-      );
-    }
-
-    $(".pageAccount .avgCons10 .val").text(averageConsLast10 + "%");
-  }
-
-  $(".pageAccount .testsStarted .val").text(`${testCount + testRestarts}`);
-  $(".pageAccount .testsCompleted .val").text(
+  qs(".pageAccount .testsStarted .val")?.setText(`${testCount + testRestarts}`);
+  qs(".pageAccount .testsCompleted .val")?.setText(
     `${testCount}(${Math.floor(
-      (testCount / (testCount + testRestarts)) * 100
-    )}%)`
+      (testCount / (testCount + testRestarts)) * 100,
+    )}%)`,
   );
 
-  $(".pageAccount .testsCompleted .avgres").text(`
+  qs(".pageAccount .testsCompleted .avgres")?.setText(`
     ${(testRestarts / testCount).toFixed(1)} restarts per completed test
   `);
 
   const wpmPoints = filteredResults.map((r) => r.wpm).reverse();
 
-  const trend = Misc.findLineByLeastSquares(wpmPoints);
+  const trend = findLineByLeastSquares(wpmPoints);
   if (trend) {
     const wpmChange = trend[1][1] - trend[0][1];
     const wpmChangePerHour = wpmChange * (3600 / totalSecondsFiltered);
     const plus = wpmChangePerHour > 0 ? "+" : "";
-    $(".pageAccount .group.chart .below .text").text(
+    qs(".pageAccount .group.chart .below .text")?.setText(
       `Speed change per hour spent typing: ${
-        plus + Misc.roundTo2(typingSpeedUnit.fromWpm(wpmChangePerHour))
-      } ${Config.typingSpeedUnit}`
+        plus + Format.typingSpeed(wpmChangePerHour, { showDecimalPlaces: true })
+      } ${Config.typingSpeedUnit}`,
     );
   }
-  $(".pageAccount .estimatedWordsTyped .val").text(totalEstimatedWords);
+  qs(".pageAccount .estimatedWordsTyped .val")?.setText(
+    totalEstimatedWords.toString(),
+  );
 
   if (chartData.length || accChartData.length) {
     ChartController.updateAccountChartButtons();
@@ -1034,31 +954,12 @@ async function fillContent(): Promise<void> {
   await Misc.sleep(0);
   ChartController.accountActivity.update();
   ChartController.accountHistogram.update();
-  LoadingPage.updateBar(100, true);
   Focus.set(false);
-  Misc.swapElements(
-    $(".pageAccount .preloader"),
-    $(".pageAccount .content"),
-    250,
-    async () => {
-      $(".page.pageAccount").css("height", "unset"); //weird safari fix
-    },
-    async () => {
-      setTimeout(() => {
-        Profile.updateNameFontSize("account");
-      }, 10);
-    }
-  );
+  qs(".page.pageAccount")?.setStyle({ height: "unset" }); //weird safari fix
 }
 
 export async function downloadResults(offset?: number): Promise<void> {
   const results = await DB.getUserResults(offset);
-  if (results === false && !ConnectionState.get()) {
-    Notifications.add("Could not get results - you are offline", -1, {
-      duration: 5,
-    });
-    return;
-  }
 
   TodayTracker.addAllFromToday();
   if (results) {
@@ -1067,296 +968,279 @@ export async function downloadResults(offset?: number): Promise<void> {
 }
 
 async function update(): Promise<void> {
-  LoadingPage.updateBar(0, true);
-  if (DB.getSnapshot() === null) {
-    Notifications.add(`Missing account data. Please refresh.`, -1);
-    $(".pageAccount .preloader").html("Missing account data. Please refresh.");
-  } else {
-    LoadingPage.updateBar(90);
-    await downloadResults();
-    try {
-      await Misc.sleep(0);
-      await fillContent();
-    } catch (e) {
-      console.error(e);
-      Notifications.add(`Something went wrong: ${e}`, -1);
-    }
+  await downloadResults();
+  try {
+    await Misc.sleep(0);
+    await fillContent();
+  } catch (e) {
+    console.error(e);
+    showErrorNotification(`Something went wrong: ${e}`);
   }
 }
 
-function sortAndRefreshHistory(
-  keyString: string,
-  headerClass: string,
-  forceDescending: null | boolean = null
-): void {
-  // Removes styling from previous sorting requests:
-  $("td").removeClass("headerSorted");
-  $("td").children("i").remove();
-  $(headerClass).addClass("headerSorted");
+export function updateTagsForResult(resultId: string, tagIds: string[]): void {
+  const tagNames: string[] = [];
 
-  if (filteredResults.length < 2) return;
-
-  const key = keyString as keyof typeof filteredResults[0];
-
-  // This allows to reverse the sorting order when clicking multiple times on the table header
-  let descending = true;
-  if (forceDescending !== null) {
-    if (forceDescending === true) {
-      $(headerClass).append(
-        '<i class="fas fa-sort-down" aria-hidden="true"></i>'
-      );
-    } else {
-      descending = false;
-      $(headerClass).append(
-        '<i class="fas fa-sort-up" aria-hidden="true"></i>'
-      );
+  if (tagIds.length > 0) {
+    for (const tag of tagIds) {
+      DB.getSnapshot()?.tags?.forEach((snaptag) => {
+        if (tag === snaptag._id) {
+          tagNames.push(snaptag.display);
+        }
+      });
     }
-  } else if (
-    parseInt(filteredResults?.[0]?.[key] as string) <=
-    parseInt(filteredResults?.[filteredResults.length - 1]?.[key] as string)
-  ) {
-    descending = true;
-    $(headerClass).append(
-      '<i class="fas fa-sort-down" aria-hidden="true"></i>'
-    );
-  } else {
-    descending = false;
-    $(headerClass).append('<i class="fas fa-sort-up", aria-hidden="true"></i>');
   }
 
-  const temp = [];
-  const parsedIndexes: number[] = [];
+  const el = qs(
+    `.pageAccount .resultEditTagsButton[data-result-id='${resultId}']`,
+  );
 
-  while (temp.length < filteredResults.length) {
-    let lowest = Number.MAX_VALUE;
-    let highest = -1;
-    let idx = -1;
+  el?.setAttribute("data-tags", JSON.stringify(tagIds));
 
-    // for (let i = 0; i < filteredResults.length; i++) {
-    for (const [i, result] of filteredResults.entries()) {
-      //find the lowest wpm with index not already parsed
-      if (!descending) {
-        if ((result[key] as number) <= lowest && !parsedIndexes.includes(i)) {
-          lowest = result[key] as number;
-          idx = i;
-        }
-      } else {
-        if ((result[key] as number) >= highest && !parsedIndexes.includes(i)) {
-          highest = result[key] as number;
-          idx = i;
-        }
+  if (tagIds.length > 0) {
+    el?.setAttribute("aria-label", tagNames.join(", "));
+    el?.addClass("active");
+    if (tagIds.length > 1) {
+      el?.setHtml(`<i class="fas fa-fw fa-tags"></i>`);
+    } else {
+      el?.setHtml(`<i class="fas fa-fw fa-tag"></i>`);
+    }
+  } else {
+    el?.setAttribute("aria-label", "no tags");
+    el?.removeClass("active");
+    el?.setHtml(`<i class="fas fa-fw fa-tag"></i>`);
+  }
+}
+
+qs(".pageAccount button.toggleResultsOnChart")?.on("click", () => {
+  const newValue = [...Config.accountChart] as AccountChart;
+  newValue[0] = newValue[0] === "on" ? "off" : "on";
+  setConfig("accountChart", newValue);
+});
+
+qs(".pageAccount button.toggleAccuracyOnChart")?.on("click", () => {
+  const newValue = [...Config.accountChart] as AccountChart;
+  newValue[1] = newValue[1] === "on" ? "off" : "on";
+  setConfig("accountChart", newValue);
+});
+
+qs(".pageAccount button.toggleAverage10OnChart")?.on("click", () => {
+  const newValue = [...Config.accountChart] as AccountChart;
+  newValue[2] = newValue[2] === "on" ? "off" : "on";
+  setConfig("accountChart", newValue);
+});
+
+qs(".pageAccount button.toggleAverage100OnChart")?.on("click", () => {
+  const newValue = [...Config.accountChart] as AccountChart;
+  newValue[3] = newValue[3] === "on" ? "off" : "on";
+  setConfig("accountChart", newValue);
+});
+
+qs(".pageAccount .loadMoreButton")?.on("click", () => {
+  loadMoreLines();
+});
+
+qs(".pageAccount #accountHistoryChart")?.on("click", () => {
+  const chart = ChartController.accountHistory;
+  const active = chart.tooltip?.getActiveElements?.() ?? [];
+  if (!active.length) return;
+
+  const index = active[0]?.index;
+  if (index === undefined) return;
+
+  loadMoreLines(index);
+
+  const resultId = filteredResults[index]?._id;
+  if (resultId === undefined) {
+    throw new Error("Cannot find result for index " + index);
+  }
+
+  const element = qs(`.resultRow[data-id="${resultId}"]`);
+  qsa(".resultRow").removeClass("active");
+
+  element?.scrollIntoView({ block: "center" });
+  element?.addClass("active");
+});
+
+qs(".pageAccount")?.onChild(
+  "click",
+  ".miniResultChartButton",
+  async (event) => {
+    const target = new ElementWithUtils(event.childTarget as HTMLElement);
+    const resultId: string = target
+      .closestParent("tr")
+      ?.getAttribute("data-id") as string;
+    if (target.hasClass("loading")) return;
+    if (target.hasClass("disabled")) return;
+
+    const result = filteredResults.find((it) => it._id === resultId);
+    if (result === undefined) return;
+
+    let chartData = result.chartData as ChartData;
+
+    if (chartData === undefined) {
+      //need to load full result
+      target?.addClass("loading");
+      target?.removeAttribute("aria-label");
+      target?.setHtml('<i class="fas fa-fw fa-spin fa-circle-notch"></i>');
+      showLoaderBar();
+
+      const response = await Ape.results.getById({
+        params: { resultId: result._id },
+      });
+      hideLoaderBar();
+
+      target?.setHtml('<i class="fas fa-fw fa-chart-line"></i>');
+      target?.removeClass("loading");
+
+      if (response.status !== 200) {
+        showErrorNotification("Error fetching result", { response });
+        return;
+      }
+
+      chartData = response.body.data.chartData as ChartData;
+
+      //update local cache
+      result.chartData = chartData;
+      const dbResult = DB.getSnapshot()?.results?.find(
+        (it) => it._id === result._id,
+      );
+      if (dbResult !== undefined) {
+        dbResult.chartData = result.chartData;
+      }
+
+      if (response.body.data.chartData === "toolong") {
+        target?.setAttribute(
+          "aria-label",
+          "Graph history is not available for long tests",
+        );
+        target?.setAttribute("data-balloon-pos", "up");
+        target.addClass("disabled");
+
+        showNoticeNotification("Graph history is not available for long tests");
+        return;
       }
     }
-
-    temp.push(filteredResults[idx]);
-    parsedIndexes.push(idx);
-  }
-  filteredResults = temp as SharedTypes.Result<
-    keyof SharedTypes.PersonalBests
-  >[];
-
-  $(".pageAccount .history table tbody").empty();
-  visibleTableLines = 0;
-  loadMoreLines();
-}
-
-$(".pageAccount button.toggleResultsOnChart").on("click", () => {
-  UpdateConfig.setAccountChartResults(!(Config.accountChart[0] === "on"));
-});
-
-$(".pageAccount button.toggleAccuracyOnChart").on("click", () => {
-  UpdateConfig.setAccountChartAccuracy(!(Config.accountChart[1] === "on"));
-});
-
-$(".pageAccount button.toggleAverage10OnChart").on("click", () => {
-  UpdateConfig.setAccountChartAvg10(!(Config.accountChart[2] === "on"));
-});
-
-$(".pageAccount button.toggleAverage100OnChart").on("click", () => {
-  UpdateConfig.setAccountChartAvg100(!(Config.accountChart[3] === "on"));
-});
-
-$(".pageAccount .loadMoreButton").on("click", () => {
-  loadMoreLines();
-});
-
-$(".pageAccount #accountHistoryChart").on("click", () => {
-  const index: number = ChartController.accountHistoryActiveIndex;
-  loadMoreLines(index);
-  if (!window) return;
-  const windowHeight = $(window).height() ?? 0;
-  const offset = $(`#result-${index}`).offset()?.top ?? 0;
-  const scrollTo = offset - windowHeight / 2;
-  $([document.documentElement, document.body]).animate(
-    {
-      scrollTop: scrollTo,
-    },
-    500
-  );
-  $(".resultRow").removeClass("active");
-  $(`#result-${index}`).addClass("active");
-});
-
-$(".pageAccount").on("click", ".miniResultChartButton", (event) => {
-  console.log("updating");
-  const filteredId = $(event.currentTarget).attr("filteredResultsId");
-  if (filteredId === undefined) return;
-  MiniResultChart.updateData(
-    filteredResults[parseInt(filteredId)]?.chartData as SharedTypes.ChartData
-  );
-  MiniResultChart.show();
-  MiniResultChart.updatePosition(
-    event.pageX - ($(".pageAccount .miniResultChartWrapper").outerWidth() ?? 0),
-    event.pageY + 30
-  );
-});
-
-$(".pageAccount .group.history").on("click", ".history-wpm-header", () => {
-  sortAndRefreshHistory("wpm", ".history-wpm-header");
-});
-
-$(".pageAccount .group.history").on("click", ".history-raw-header", () => {
-  sortAndRefreshHistory("rawWpm", ".history-raw-header");
-});
-
-$(".pageAccount .group.history").on("click", ".history-acc-header", () => {
-  sortAndRefreshHistory("acc", ".history-acc-header");
-});
-
-$(".pageAccount .group.history").on(
-  "click",
-  ".history-correct-chars-header",
-  () => {
-    sortAndRefreshHistory("correctChars", ".history-correct-chars-header");
-  }
+    target?.setAttribute("aria-label", "View graph");
+    MiniResultChartModal.show(chartData);
+  },
 );
 
-$(".pageAccount .group.history").on(
-  "click",
-  ".history-incorrect-chars-header",
-  () => {
-    sortAndRefreshHistory("incorrectChars", ".history-incorrect-chars-header");
-  }
+const filterButtons = qsa(
+  ".pageAccount .group.topFilters, .pageAccount .filterButtons",
 );
 
-$(".pageAccount .group.history").on(
-  "click",
-  ".history-consistency-header",
-  () => {
-    sortAndRefreshHistory("consistency", ".history-consistency-header");
-  }
-);
-
-$(".pageAccount .group.history").on("click", ".history-date-header", () => {
-  sortAndRefreshHistory("timestamp", ".history-date-header");
-});
-
-// Resets sorting to by date' when applying filers (normal or advanced)
-$(".pageAccount .group.history").on(
-  "click",
-  ".buttonsAndTitle .buttons button",
-  () => {
-    // We want to 'force' descending sort:
-    sortAndRefreshHistory("timestamp", ".history-date-header", true);
-  }
-);
-
-$(".pageAccount .group.topFilters, .pageAccount .filterButtons").on(
-  "click",
-  "button",
-  () => {
+filterButtons.forEach((filterButton) => {
+  filterButton.onChild("click", "button", () => {
     setTimeout(() => {
-      update();
+      void update();
     }, 0);
-  }
-);
+  });
+});
 
-$(".pageAccount .group.presetFilterButtons").on(
+qs(".pageAccount .group.presetFilterButtons")?.onChild(
   "click",
   ".filterBtns .filterPresets .select-filter-preset",
-  (e) => {
-    ResultFilters.setFilterPreset($(e.target).data("id"));
-    update();
-  }
+  async (e) => {
+    const target = e.childTarget as HTMLElement;
+    await ResultFilters.setFilterPreset(
+      target.getAttribute("data-id") as string,
+    );
+    void update();
+  },
 );
 
-$(".pageAccount .content .group.aboveHistory .exportCSV").on("click", () => {
-  Misc.downloadResultsCSV(filteredResults);
+qs(".pageAccount .content .group.aboveHistory .exportCSV")?.on("click", () => {
+  showLoaderBar();
+  void Misc.downloadResultsCSV(filteredResults).finally(() => {
+    hideLoaderBar();
+  });
 });
 
-$(".pageAccount .profile").on("click", ".details .copyLink", () => {
-  const snapshot = DB.getSnapshot();
-  if (!snapshot) return;
-  const { name } = snapshot;
-  const url = `${location.origin}/profile/${name}`;
+qs(".pageAccount button.loadMoreResults")?.on("click", async () => {
+  const offset = DB.getSnapshot()?.results?.length ?? 0;
 
-  navigator.clipboard.writeText(url).then(
-    function () {
-      Notifications.add("URL Copied to clipboard", 0);
-    },
-    function () {
-      alert("Failed to copy using the Clipboard API. Here's the link: " + url);
-    }
-  );
-});
-
-$(".pageAccount button.loadMoreResults").on("click", async () => {
-  const offset = DB.getSnapshot()?.results?.length || 0;
-
-  Loader.show();
+  showLoaderBar();
   ResultBatches.disableButton();
 
   await downloadResults(offset);
   await fillContent();
-  Loader.hide();
+  hideLoaderBar();
 });
 
-ConfigEvent.subscribe((eventKey) => {
-  if (ActivePage.get() === "account" && eventKey === "typingSpeedUnit") {
-    update();
+qs(".pageAccount")?.onChild("click", ".sendVerificationEmail", async () => {
+  qs(".sendVerificationEmail")?.disable();
+  await sendVerificationEmail();
+  qs(".sendVerificationEmail")?.enable();
+});
+
+configEvent.subscribe(({ key }) => {
+  if (getActivePage() === "account" && key === "typingSpeedUnit") {
+    void update();
   }
 });
 
-export const page = new Page(
-  "account",
-  $(".page.pageAccount"),
-  "/account",
-  async () => {
-    //
+export const page = new Page<undefined>({
+  id: "account",
+  element: qsr(".page.pageAccount"),
+  path: "/account",
+  loadingOptions: {
+    loadingMode: () => {
+      if (DB.getSnapshot()?.results === undefined) {
+        return "sync";
+      } else {
+        return "none";
+      }
+    },
+    loadingPromise: async () => {
+      if (DB.getSnapshot() === null) {
+        throw new Error(
+          "Looks like your account data didn't download correctly. Please refresh the page.<br>If this error persists, please contact support.",
+        );
+      }
+      return downloadResults();
+    },
+    style: "bar",
+    keyframes: [
+      {
+        percentage: 90,
+        durationMs: 2000,
+        text: "Downloading results...",
+      },
+    ],
   },
-  async () => {
+  afterHide: async (): Promise<void> => {
     reset();
-    ResultFilters.removeButtons();
     Skeleton.remove("pageAccount");
   },
-  async () => {
+  beforeShow: async (): Promise<void> => {
     Skeleton.append("pageAccount", "main");
-    await ResultFilters.appendButtons();
+    await ResultFilters.appendDropdowns(update);
     ResultFilters.updateActive();
     await Misc.sleep(0);
-    if (DB.getSnapshot()?.results === undefined) {
-      $(".pageLoading .fill, .pageAccount .fill").css("width", "0%");
-      $(".pageAccount .content").addClass("hidden");
-      $(".pageAccount .preloader").removeClass("hidden");
-    }
 
-    await update();
-    await Misc.sleep(0);
-    updateChartColors();
-    $(".pageAccount .content p.accountVerificatinNotice").remove();
-    if (Auth?.currentUser?.emailVerified === false) {
-      $(".pageAccount .content").prepend(
-        `<p class="accountVerificatinNotice" style="text-align:center">Your account is not verified - <button class="sendVerificationEmail">send the verification email again</button>`
-      );
-    }
+    historyTable ??= new SortedTableWithLimit<SnapshotResult<Mode>>({
+      limit: 10,
+      table: qsr(".pageAccount .content .history table"),
+      data: filteredResults,
+      buildRow: (val) => {
+        return buildResultRow(val);
+      },
+      initialSort: { property: "timestamp", descending: true },
+    });
 
-    ResultBatches.showOrHideIfNeeded();
+    await update().then(() => {
+      qs(".pageAccount .content .accountVerificatinNotice")?.remove();
+      if (getAuthenticatedUser()?.emailVerified === false) {
+        qs(".pageAccount .content")?.prependHtml(
+          `<div class="accountVerificatinNotice"><i class="fas icon fa-exclamation-triangle"></i><p>Your email address is still not verified</p><button class="sendVerificationEmail">resend verification email</button></div>`,
+        );
+      }
+      ResultBatches.showOrHideIfNeeded();
+    });
   },
-  async () => {
-    //
-  }
-);
+});
 
-$(() => {
+onDOMReady(() => {
   Skeleton.save("pageAccount");
 });

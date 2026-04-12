@@ -1,78 +1,87 @@
-import Config from "../config";
+import { Config } from "../config/store";
 import * as TestState from "../test/test-state";
-import * as ConfigEvent from "../observables/config-event";
+import { configEvent } from "../events/config";
+import { applyReducedMotion } from "../utils/misc";
+import { requestDebouncedAnimationFrame } from "../utils/debounced-animation-frame";
+import { qs } from "../utils/dom";
+
+const textEl = qs("#liveStatsTextBottom .liveAcc");
+const miniEl = qs("#liveStatsMini .acc");
 
 export function update(acc: number): void {
-  let number = Math.floor(acc);
-  if (Config.blindMode) {
-    number = 100;
-  }
-  (document.querySelector("#miniTimerAndLiveWpm .acc") as Element).innerHTML =
-    number + "%";
-  (document.querySelector("#liveAcc") as Element).innerHTML = number + "%";
+  requestDebouncedAnimationFrame("live-acc.update", () => {
+    let number = Math.floor(acc);
+    if (Config.blindMode) {
+      number = 100;
+    }
+    miniEl?.setHtml(number + "%");
+    textEl?.setHtml(number + "%");
+  });
+}
+
+export function reset(): void {
+  requestDebouncedAnimationFrame("live-acc.reset", () => {
+    miniEl?.setHtml("100%");
+    textEl?.setHtml("100%");
+  });
 }
 
 let state = false;
 
 export function show(): void {
-  if (!Config.showLiveAcc) return;
+  if (Config.liveAccStyle === "off") return;
   if (!TestState.isActive) return;
   if (state) return;
-  if (Config.timerStyle === "mini") {
-    $("#miniTimerAndLiveWpm .acc")
-      .stop(true, false)
-      .removeClass("hidden")
-      .css("opacity", 0)
-      .animate(
-        {
-          opacity: Config.timerOpacity,
-        },
-        125
-      );
-  } else {
-    $("#liveAcc")
-      .stop(true, false)
-      .removeClass("hidden")
-      .css("opacity", 0)
-      .animate(
-        {
-          opacity: Config.timerOpacity,
-        },
-        125
-      );
-  }
-  state = true;
+  requestDebouncedAnimationFrame("live-acc.show", () => {
+    if (Config.liveAccStyle === "mini") {
+      miniEl?.show();
+      miniEl?.animate({
+        opacity: [0, 1],
+        duration: applyReducedMotion(125),
+      });
+    } else {
+      textEl?.show();
+      textEl?.animate({
+        opacity: [0, 1],
+        duration: applyReducedMotion(125),
+      });
+    }
+    state = true;
+  });
 }
 
 export function hide(): void {
-  // $("#liveWpm").css("opacity", 0);
-  // $("#miniTimerAndLiveWpm .wpm").css("opacity", 0);
   if (!state) return;
-  $("#liveAcc")
-    .stop(true, false)
-    .animate(
-      {
-        opacity: 0,
+  requestDebouncedAnimationFrame("live-acc.hide", () => {
+    textEl?.animate({
+      opacity: [1, 0],
+      duration: applyReducedMotion(125),
+      onComplete: () => {
+        textEl?.hide();
       },
-      125,
-      () => {
-        $("#liveAcc").addClass("hidden");
-      }
-    );
-  $("#miniTimerAndLiveWpm .acc")
-    .stop(true, false)
-    .animate(
-      {
-        opacity: 0,
+    });
+    miniEl?.animate({
+      opacity: [1, 0],
+      duration: applyReducedMotion(125),
+      onComplete: () => {
+        miniEl?.hide();
       },
-      125,
-      () => {
-        $("#miniTimerAndLiveWpm .acc").addClass("hidden");
-      }
-    );
+    });
+    state = false;
+  });
+}
+
+export function instantHide(): void {
+  if (!state) return;
+
+  textEl?.hide();
+  textEl?.setStyle({ opacity: "0" });
+  miniEl?.hide();
+  miniEl?.setStyle({ opacity: "0" });
+
   state = false;
 }
 
-ConfigEvent.subscribe((eventKey, eventValue) => {
-  if (eventKey === "showLiveAcc") eventValue ? show() : hide();
+configEvent.subscribe(({ key, newValue }) => {
+  if (key === "liveAccStyle") newValue === "off" ? hide() : show();
 });

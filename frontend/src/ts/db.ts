@@ -1,20 +1,67 @@
 import Ape from "./ape";
-import * as Notifications from "./elements/notifications";
-import * as LoadingPage from "./pages/loading";
-import DefaultConfig from "./constants/default-config";
-import { Auth } from "./firebase";
-import { defaultSnap } from "./constants/default-snapshot";
-import * as ConnectionState from "./states/connection";
-import { getFunboxList, lastElementFromArray } from "./utils/misc";
+import {
+  showNoticeNotification,
+  showErrorNotification,
+} from "./states/notifications";
+import { getAuthenticatedUser } from "./firebase";
+import { isAuthenticated } from "./states/core";
+import { lastElementFromArray } from "./utils/arrays";
+import * as Dates from "date-fns";
+import {
+  TestActivityCalendar,
+  ModifiableTestActivityCalendar,
+} from "./elements/test-activity-calendar";
+import { showLoaderBar, hideLoaderBar } from "./states/loader-bar";
+import { Badge, CustomTheme } from "@monkeytype/schemas/users";
+import { Difficulty } from "@monkeytype/schemas/configs";
+import {
+  Mode,
+  Mode2,
+  PersonalBest,
+  PersonalBests,
+} from "@monkeytype/schemas/shared";
+import {
+  getDefaultSnapshot,
+  Snapshot,
+  SnapshotPreset,
+  SnapshotResult,
+  SnapshotUserTag,
+} from "./constants/default-snapshot";
+import { getFirstDayOfTheWeek } from "./utils/date-and-time";
+import { Language } from "@monkeytype/schemas/languages";
+import { authEvent } from "./events/auth";
+import {
+  configurationPromise,
+  get as getServerConfiguration,
+} from "./ape/server-configuration";
+import { Connection } from "@monkeytype/schemas/connections";
+import {
+  setLastResult,
+  setSnapshot as setSolidSnapshot,
+} from "./states/snapshot";
+import { XpBreakdown } from "@monkeytype/schemas/results";
+import { setXpBarData } from "./states/header";
+import { FunboxMetadata } from "@monkeytype/funbox";
 
-let dbSnapshot: MonkeyTypes.Snapshot | undefined;
+let dbSnapshot: Snapshot | undefined;
+const firstDayOfTheWeek = getFirstDayOfTheWeek();
 
-export function getSnapshot(): MonkeyTypes.Snapshot | undefined {
+export class SnapshotInitError extends Error {
+  public responseCode: number;
+  constructor(message: string, responseCode: number) {
+    super(message);
+    this.name = "SnapshotInitError";
+    this.responseCode = responseCode;
+  }
+}
+
+export function getSnapshot(): Snapshot | undefined {
   return dbSnapshot;
 }
 
 export function setSnapshot(
-  newSnapshot: MonkeyTypes.Snapshot | undefined
+  newSnapshot: Snapshot | undefined,
+  options?: { dispatchEvent?: boolean },
 ): void {
   const originalBanned = dbSnapshot?.banned;
   const originalVerified = dbSnapshot?.verified;
@@ -36,54 +83,62 @@ export function setSnapshot(
     dbSnapshot.verified = originalVerified;
     dbSnapshot.lbOptOut = lbOptOut;
   }
+
+  if (options?.dispatchEvent !== false) {
+    authEvent.dispatch({ type: "snapshotUpdated", data: { isInitial: false } });
+  }
+
+  setSolidSnapshot(newSnapshot);
 }
 
-export async function initSnapshot(): Promise<
-  MonkeyTypes.Snapshot | number | boolean
-> {
+export async function initSnapshot(): Promise<Snapshot | false> {
   //send api request with token that returns tags, presets, and data needed for snap
-  const snap = { ...defaultSnap };
+  const snap = getDefaultSnapshot();
+  await configurationPromise;
+
   try {
-    if (!Auth?.currentUser) return false;
-    // if (ActivePage.get() === "loading") {
-    //   LoadingPage.updateBar(22.5);
-    // } else {
-    //   LoadingPage.updateBar(16);
-    // }
-    // LoadingPage.updateText("Downloading user...");
+    if (!isAuthenticated()) return false;
 
-    //getData recreates the user if it doesnt exist - thats why it needs to be called first, by itself
-    const userResponse = await Ape.users.getData();
+    const connectionsRequest = getServerConfiguration()?.connections.enabled
+      ? Ape.connections.get()
+      : { status: 200, body: { message: "", data: [] } };
 
-    const [configResponse, presetsResponse] = await Promise.all([
-      Ape.configs.get(),
-      Ape.presets.get(),
-    ]);
+    const [userResponse, presetsResponse, connectionsResponse] =
+      await Promise.all([
+        Ape.users.get(),
+        Ape.presets.get(),
+        connectionsRequest,
+      ]);
 
     if (userResponse.status !== 200) {
-      throw {
-        message: `${userResponse.message} (user)`,
-        responseCode: userResponse.status,
-      };
-    }
-    if (configResponse.status !== 200) {
-      throw {
-        message: `${configResponse.message} (config)`,
-        responseCode: configResponse.status,
-      };
+      throw new SnapshotInitError(
+        `${userResponse.body.message} (user)`,
+        userResponse.status,
+      );
     }
     if (presetsResponse.status !== 200) {
-      throw {
-        message: `${presetsResponse.message} (presets)`,
-        responseCode: presetsResponse.status,
-      };
+      throw new SnapshotInitError(
+        `${presetsResponse.body.message} (presets)`,
+        presetsResponse.status,
+      );
+    }
+    if (connectionsResponse.status !== 200) {
+      throw new SnapshotInitError(
+        `${connectionsResponse.body.message} (connections)`,
+        connectionsResponse.status,
+      );
     }
 
-    const [userData, configData, presetsData] = [
-      userResponse,
-      configResponse,
-      presetsResponse,
-    ].map((response) => response.data);
+    const userData = userResponse.body.data;
+    const presetsData = presetsResponse.body.data;
+    const connectionsData = connectionsResponse.body.data;
+
+    if (userData === null) {
+      throw new SnapshotInitError(
+        `Request was successful but user data is null`,
+        200,
+      );
+    }
 
     snap.name = userData.name;
     snap.personalBests = userData.personalBests;
@@ -96,7 +151,7 @@ export async function initSnapshot(): Promise<
     };
 
     for (const mode of ["time", "words", "quote", "zen", "custom"]) {
-      snap.personalBests[mode as keyof SharedTypes.PersonalBests] ??= {};
+      snap.personalBests[mode as keyof PersonalBests] ??= {};
     }
 
     snap.banned = userData.banned;
@@ -106,15 +161,13 @@ export async function initSnapshot(): Promise<
     snap.discordAvatar = userData.discordAvatar;
     snap.needsToChangeName = userData.needsToChangeName;
     snap.typingStats = {
-      timeTyping: userData.timeTyping,
-      startedTests: userData.startedTests,
-      completedTests: userData.completedTests,
+      timeTyping: userData.timeTyping ?? 0,
+      startedTests: userData.startedTests ?? 0,
+      completedTests: userData.completedTests ?? 0,
     };
     snap.quoteMod = userData.quoteMod;
     snap.favoriteQuotes = userData.favoriteQuotes ?? {};
     snap.quoteRatings = userData.quoteRatings;
-    snap.favouriteThemes =
-      userData.favouriteThemes === undefined ? [] : userData.favouriteThemes;
     snap.details = userData.profileDetails;
     snap.addedAt = userData.addedAt;
     snap.inventory = userData.inventory;
@@ -123,64 +176,50 @@ export async function initSnapshot(): Promise<
     snap.streak = userData?.streak?.length ?? 0;
     snap.maxStreak = userData?.streak?.maxLength ?? 0;
     snap.filterPresets = userData.resultFilterPresets ?? [];
-    snap.isPremium = userData?.isPremium;
+    snap.isPremium = userData?.isPremium ?? false;
+    snap.allTimeLbs = userData.allTimeLbs;
+
+    if (userData.testActivity !== undefined) {
+      snap.testActivity = new ModifiableTestActivityCalendar(
+        userData.testActivity.testsByDays,
+        new Date(userData.testActivity.lastDay),
+        firstDayOfTheWeek,
+      );
+    }
 
     const hourOffset = userData?.streak?.hourOffset;
-    snap.streakHourOffset =
-      hourOffset === undefined || hourOffset === null ? undefined : hourOffset;
+    snap.streakHourOffset = hourOffset ?? undefined;
 
-    if (userData.lbMemory?.time15 || userData.lbMemory?.time60) {
-      //old memory format
-      snap.lbMemory = {} as MonkeyTypes.LeaderboardMemory;
-    } else if (userData.lbMemory) {
+    if (userData.lbMemory !== undefined) {
       snap.lbMemory = userData.lbMemory;
     }
-    // if (ActivePage.get() === "loading") {
-    //   LoadingPage.updateBar(45);
-    // } else {
-    //   LoadingPage.updateBar(32);
-    // }
-    // LoadingPage.updateText("Downloading config...");
-    if (configData) {
-      const newConfig = {
-        ...DefaultConfig,
-      };
 
-      for (const key in configData.config) {
-        const value = configData.config[key];
-        (newConfig[
-          key as keyof MonkeyTypes.Config
-        ] as typeof configData[typeof key]) = value;
-      }
-
-      snap.config = newConfig;
-    }
-    // if (ActivePage.get() === "loading") {
-    //   LoadingPage.updateBar(67.5);
-    // } else {
-    //   LoadingPage.updateBar(48);
-    // }
-    // LoadingPage.updateText("Downloading tags...");
     snap.customThemes = userData.customThemes ?? [];
 
-    const userDataTags: MonkeyTypes.Tag[] = userData.tags ?? [];
+    // const userDataTags: MonkeyTypes.UserTagWithDisplay[] = userData.tags ?? [];
 
-    userDataTags.forEach((tag) => {
-      tag.display = tag.name.replaceAll("_", " ");
-      tag.personalBests ??= {
-        time: {},
-        words: {},
-        quote: {},
-        zen: {},
-        custom: {},
-      };
+    // userDataTags.forEach((tag) => {
+    //   tag.display = tag.name.replaceAll("_", " ");
+    //   tag.personalBests ??= {
+    //     time: {},
+    //     words: {},
+    //     quote: {},
+    //     zen: {},
+    //     custom: {},
+    //   };
 
-      for (const mode of ["time", "words", "quote", "zen", "custom"]) {
-        tag.personalBests[mode as keyof SharedTypes.PersonalBests] ??= {};
-      }
-    });
+    //   for (const mode of ["time", "words", "quote", "zen", "custom"]) {
+    //     tag.personalBests[mode as keyof PersonalBests] ??= {};
+    //   }
+    // });
 
-    snap.tags = userDataTags;
+    // snap.tags = userDataTags;
+
+    snap.tags =
+      userData.tags?.map((tag) => ({
+        ...tag,
+        display: tag.name.replace(/_/g, " "),
+      })) ?? [];
 
     snap.tags = snap.tags?.sort((a, b) => {
       if (a.name > b.name) {
@@ -192,39 +231,44 @@ export async function initSnapshot(): Promise<
       }
     });
 
-    // if (ActivePage.get() === "loading") {
-    //   LoadingPage.updateBar(90);
-    // } else {
-    //   LoadingPage.updateBar(64);
-    // }
-    // LoadingPage.updateText("Downloading presets...");
-    snap.presets = presetsData;
+    if (presetsData !== undefined && presetsData !== null) {
+      const presetsWithDisplay = presetsData.map((preset) => {
+        return {
+          ...preset,
+          display: preset.name.replace(/_/g, " "),
+        };
+      }) as SnapshotPreset[];
+      snap.presets = presetsWithDisplay;
 
-    snap.presets?.forEach((preset) => {
-      preset.display = preset.name.replaceAll("_", " ");
-    });
+      snap.presets = snap.presets?.sort(
+        (a: SnapshotPreset, b: SnapshotPreset) => {
+          if (a.name > b.name) {
+            return 1;
+          } else if (a.name < b.name) {
+            return -1;
+          } else {
+            return 0;
+          }
+        },
+      );
+    }
 
-    snap.presets = snap.presets?.sort((a, b) => {
-      if (a.name > b.name) {
-        return 1;
-      } else if (a.name < b.name) {
-        return -1;
-      } else {
-        return 0;
-      }
-    });
+    snap.connections = convertConnections(connectionsData);
 
     dbSnapshot = snap;
+
     return dbSnapshot;
   } catch (e) {
-    dbSnapshot = defaultSnap;
+    dbSnapshot = getDefaultSnapshot();
     throw e;
+  } finally {
+    setSolidSnapshot(dbSnapshot);
   }
 }
 
 export async function getUserResults(offset?: number): Promise<boolean> {
-  const user = Auth?.currentUser;
-  if (!user) return false;
+  if (!isAuthenticated()) return false;
+
   if (!dbSnapshot) return false;
   if (
     dbSnapshot.results !== undefined &&
@@ -233,93 +277,81 @@ export async function getUserResults(offset?: number): Promise<boolean> {
     return false;
   }
 
-  if (!ConnectionState.get()) {
-    return false;
-  }
-
-  if (dbSnapshot.results === undefined) {
-    LoadingPage.updateText("Downloading results...");
-    LoadingPage.updateBar(90);
-  }
-
-  const response = await Ape.results.get(offset);
+  const response = await Ape.results.get({ query: { offset } });
 
   if (response.status !== 200) {
-    Notifications.add("Error getting results: " + response.message, -1);
+    showErrorNotification("Error getting results", { response });
     return false;
   }
 
-  const results = response.data as SharedTypes.DBResult<SharedTypes.Mode>[];
-  results?.sort((a, b) => b.timestamp - a.timestamp);
-  results.forEach((result) => {
-    if (result.bailedOut === undefined) result.bailedOut = false;
-    if (result.blindMode === undefined) result.blindMode = false;
-    if (result.lazyMode === undefined) result.lazyMode = false;
-    if (result.difficulty === undefined) result.difficulty = "normal";
-    if (result.funbox === undefined) result.funbox = "none";
-    if (result.language === undefined || result.language === null) {
-      result.language = "english";
-    }
-    if (result.numbers === undefined) result.numbers = false;
-    if (result.punctuation === undefined) result.punctuation = false;
-    if (result.quoteLength === undefined) result.quoteLength = -1;
-    if (result.restartCount === undefined) result.restartCount = 0;
-    if (result.incompleteTestSeconds === undefined) {
-      result.incompleteTestSeconds = 0;
-    }
-    if (result.afkDuration === undefined) result.afkDuration = 0;
-    if (result.tags === undefined) result.tags = [];
+  //another check in case user logs out while waiting for response
+  if (!isAuthenticated()) return false;
 
-    if (
-      result.correctChars !== undefined &&
-      result.incorrectChars !== undefined
-    ) {
-      result.charStats = [result.correctChars, result.incorrectChars, 0, 0];
-    }
+  const results: SnapshotResult<Mode>[] = response.body.data.map((result) => {
+    result.bailedOut ??= false;
+    result.blindMode ??= false;
+    result.lazyMode ??= false;
+    result.difficulty ??= "normal";
+    result.funbox ??= [];
+    result.language ??= "english";
+    result.numbers ??= false;
+    result.punctuation ??= false;
+    result.numbers ??= false;
+    result.quoteLength ??= -1;
+    result.restartCount ??= 0;
+    result.incompleteTestSeconds ??= 0;
+    result.afkDuration ??= 0;
+    result.tags ??= [];
+    return result as SnapshotResult<Mode>;
   });
+  results?.sort((a, b) => b.timestamp - a.timestamp);
 
   if (dbSnapshot.results !== undefined && dbSnapshot.results.length > 0) {
     //merge
     const oldestTimestamp = lastElementFromArray(dbSnapshot.results)
       ?.timestamp as number;
     const resultsWithoutDuplicates = results.filter(
-      (it) => it.timestamp < oldestTimestamp
+      (it) => it.timestamp < oldestTimestamp,
     );
-    dbSnapshot.results.push(
-      ...(resultsWithoutDuplicates as unknown as SharedTypes.Result<SharedTypes.Mode>[])
-    );
+    dbSnapshot.results.push(...resultsWithoutDuplicates);
   } else {
-    dbSnapshot.results =
-      results as unknown as SharedTypes.Result<SharedTypes.Mode>[];
+    dbSnapshot.results = results;
   }
+
+  setLastResult(results[0]);
   return true;
 }
 
-function _getCustomThemeById(
-  themeID: string
-): MonkeyTypes.CustomTheme | undefined {
-  return dbSnapshot?.customThemes.find((t) => t._id === themeID);
+function _getCustomThemeById(themeID: string): CustomTheme | undefined {
+  return dbSnapshot?.customThemes?.find((t) => t._id === themeID);
 }
 
 export async function addCustomTheme(
-  theme: MonkeyTypes.RawCustomTheme
+  theme: Omit<CustomTheme, "_id">,
 ): Promise<boolean> {
   if (!dbSnapshot) return false;
 
-  if (dbSnapshot.customThemes.length >= 10) {
-    Notifications.add("Too many custom themes!", 0);
+  dbSnapshot.customThemes ??= [];
+
+  if (dbSnapshot.customThemes.length >= 20) {
+    showNoticeNotification("Too many custom themes!");
     return false;
   }
 
-  const response = await Ape.users.addCustomTheme(theme);
+  const response = await Ape.users.addCustomTheme({ body: { ...theme } });
   if (response.status !== 200) {
-    Notifications.add("Error adding custom theme: " + response.message, -1);
+    showErrorNotification("Error adding custom theme", { response });
     return false;
   }
 
-  const newCustomTheme: MonkeyTypes.CustomTheme = {
+  if (response.body.data === null) {
+    showErrorNotification("Error adding custom theme: No data returned");
+    return false;
+  }
+
+  const newCustomTheme: CustomTheme = {
     ...theme,
-    _id: response.data.theme._id as string,
+    _id: response.body.data._id,
   };
 
   dbSnapshot.customThemes.push(newCustomTheme);
@@ -328,28 +360,30 @@ export async function addCustomTheme(
 
 export async function editCustomTheme(
   themeId: string,
-  newTheme: MonkeyTypes.RawCustomTheme
+  newTheme: Omit<CustomTheme, "_id">,
 ): Promise<boolean> {
-  const user = Auth?.currentUser;
-  if (!user) return false;
+  if (!isAuthenticated()) return false;
   if (!dbSnapshot) return false;
 
-  const customTheme = dbSnapshot.customThemes.find((t) => t._id === themeId);
+  dbSnapshot.customThemes ??= [];
+
+  const customTheme = dbSnapshot.customThemes?.find((t) => t._id === themeId);
   if (!customTheme) {
-    Notifications.add(
+    showErrorNotification(
       "Editing failed: Custom theme with id: " + themeId + " does not exist",
-      -1
     );
     return false;
   }
 
-  const response = await Ape.users.editCustomTheme(themeId, newTheme);
+  const response = await Ape.users.editCustomTheme({
+    body: { themeId, theme: newTheme },
+  });
   if (response.status !== 200) {
-    Notifications.add("Error editing custom theme: " + response.message, -1);
+    showErrorNotification("Error editing custom theme", { response });
     return false;
   }
 
-  const newCustomTheme: MonkeyTypes.CustomTheme = {
+  const newCustomTheme: CustomTheme = {
     ...newTheme,
     _id: themeId,
   };
@@ -361,67 +395,33 @@ export async function editCustomTheme(
 }
 
 export async function deleteCustomTheme(themeId: string): Promise<boolean> {
-  const user = Auth?.currentUser;
-  if (!user) return false;
+  if (!isAuthenticated()) return false;
   if (!dbSnapshot) return false;
 
-  const customTheme = dbSnapshot.customThemes.find((t) => t._id === themeId);
+  const customTheme = dbSnapshot.customThemes?.find((t) => t._id === themeId);
   if (!customTheme) return false;
 
-  const response = await Ape.users.deleteCustomTheme(themeId);
+  const response = await Ape.users.deleteCustomTheme({ body: { themeId } });
   if (response.status !== 200) {
-    Notifications.add("Error deleting custom theme: " + response.message, -1);
+    showErrorNotification("Error deleting custom theme", { response });
     return false;
   }
 
-  dbSnapshot.customThemes = dbSnapshot.customThemes.filter(
-    (t) => t._id !== themeId
+  dbSnapshot.customThemes = dbSnapshot.customThemes?.filter(
+    (t) => t._id !== themeId,
   );
 
   return true;
 }
 
-async function _getUserHighestWpm<M extends SharedTypes.Mode>(
+export async function getUserAverage10<M extends Mode>(
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
+  mode2: Mode2<M>,
   punctuation: boolean,
+  numbers: boolean,
   language: string,
-  difficulty: SharedTypes.Difficulty,
-  lazyMode: boolean
-): Promise<number> {
-  function cont(): number {
-    let topWpm = 0;
-
-    dbSnapshot?.results?.forEach((result) => {
-      if (
-        result.mode === mode &&
-        `${result.mode2}` === `${mode2 as string | number}` && //using template strings here because legacy results can have numbers in mode2
-        result.punctuation === punctuation &&
-        result.language === language &&
-        result.difficulty === difficulty &&
-        (result.lazyMode === lazyMode ||
-          (result.lazyMode === undefined && lazyMode === false))
-      ) {
-        if (result.wpm > topWpm) {
-          topWpm = result.wpm;
-        }
-      }
-    });
-    return topWpm;
-  }
-
-  const retval = !dbSnapshot || dbSnapshot.results === undefined ? 0 : cont();
-
-  return retval;
-}
-
-export async function getUserAverage10<M extends SharedTypes.Mode>(
-  mode: M,
-  mode2: SharedTypes.Mode2<M>,
-  punctuation: boolean,
-  language: string,
-  difficulty: SharedTypes.Difficulty,
-  lazyMode: boolean
+  difficulty: Difficulty,
+  lazyMode: boolean,
 ): Promise<[number, number]> {
   const snapshot = getSnapshot();
 
@@ -446,13 +446,14 @@ export async function getUserAverage10<M extends SharedTypes.Mode>(
       for (const result of snapshot.results) {
         if (
           result.mode === mode &&
-          result.punctuation === punctuation &&
+          (result.punctuation ?? false) === punctuation &&
+          (result.numbers ?? false) === numbers &&
           result.language === language &&
           result.difficulty === difficulty &&
           (result.lazyMode === lazyMode ||
-            (result.lazyMode === undefined && lazyMode === false)) &&
+            (result.lazyMode === undefined && !lazyMode)) &&
           (activeTagIds.length === 0 ||
-            activeTagIds.some((tagId) => result.tags.includes(tagId)))
+            activeTagIds.some((tagId) => result.tags?.includes(tagId)))
         ) {
           // Continue if the mode2 doesn't match and it's not a quote
           if (
@@ -498,13 +499,14 @@ export async function getUserAverage10<M extends SharedTypes.Mode>(
   return retval;
 }
 
-export async function getUserDailyBest<M extends SharedTypes.Mode>(
+export async function getUserDailyBest<M extends Mode>(
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
+  mode2: Mode2<M>,
   punctuation: boolean,
+  numbers: boolean,
   language: string,
-  difficulty: SharedTypes.Difficulty,
-  lazyMode: boolean
+  difficulty: Difficulty,
+  lazyMode: boolean,
 ): Promise<number> {
   const snapshot = getSnapshot();
 
@@ -524,13 +526,14 @@ export async function getUserDailyBest<M extends SharedTypes.Mode>(
       for (const result of snapshot.results) {
         if (
           result.mode === mode &&
-          result.punctuation === punctuation &&
+          (result.punctuation ?? false) === punctuation &&
+          (result.numbers ?? false) === numbers &&
           result.language === language &&
           result.difficulty === difficulty &&
           (result.lazyMode === lazyMode ||
-            (result.lazyMode === undefined && lazyMode === false)) &&
+            (result.lazyMode === undefined && !lazyMode)) &&
           (activeTagIds.length === 0 ||
-            activeTagIds.some((tagId) => result.tags.includes(tagId)))
+            activeTagIds.some((tagId) => result.tags?.includes(tagId)))
         ) {
           if (result.timestamp < Date.now() - 86400000) {
             continue;
@@ -561,67 +564,78 @@ export async function getUserDailyBest<M extends SharedTypes.Mode>(
   return retval;
 }
 
-export async function getLocalPB<M extends SharedTypes.Mode>(
+export async function getActiveTagsPB<M extends Mode>(
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
+  mode2: Mode2<M>,
   punctuation: boolean,
+  numbers: boolean,
   language: string,
-  difficulty: SharedTypes.Difficulty,
+  difficulty: Difficulty,
   lazyMode: boolean,
-  funbox: string
 ): Promise<number> {
-  const funboxes = (await getFunboxList()).filter((fb) => {
-    return funbox?.split("#").includes(fb.name);
-  });
+  const snapshot = getSnapshot();
+  if (!snapshot) return 0;
 
-  if (!funboxes.every((f) => f.canGetPb)) {
-    return 0;
+  let tagPbWpm = 0;
+  for (const tag of snapshot.tags) {
+    if (!tag.active) continue;
+    const currTagPB = await getLocalTagPB(
+      tag._id,
+      mode,
+      mode2,
+      punctuation,
+      numbers,
+      language,
+      difficulty,
+      lazyMode,
+    );
+    if (currTagPB > tagPbWpm) tagPbWpm = currTagPB;
   }
 
-  function cont(): number {
-    let ret = 0;
-    try {
-      if (!dbSnapshot?.personalBests) return ret;
-
-      (
-        dbSnapshot.personalBests[mode][
-          mode2
-        ] as unknown as SharedTypes.PersonalBest[]
-      ).forEach((pb) => {
-        if (
-          pb.punctuation === punctuation &&
-          pb.difficulty === difficulty &&
-          pb.language === language &&
-          (pb.lazyMode === lazyMode ||
-            (pb.lazyMode === undefined && lazyMode === false))
-        ) {
-          ret = pb.wpm;
-        }
-      });
-
-      return ret;
-    } catch (e) {
-      return ret;
-    }
-  }
-
-  const retval = dbSnapshot === null ? 0 : cont();
-
-  return retval;
+  return tagPbWpm;
 }
 
-export async function saveLocalPB<M extends SharedTypes.Mode>(
+export async function getLocalPB<M extends Mode>(
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
+  mode2: Mode2<M>,
   punctuation: boolean,
+  numbers: boolean,
   language: string,
-  difficulty: SharedTypes.Difficulty,
+  difficulty: Difficulty,
+  lazyMode: boolean,
+  funboxes: FunboxMetadata[],
+): Promise<PersonalBest | undefined> {
+  if (!funboxes.every((f) => f.canGetPb)) {
+    return undefined;
+  }
+
+  const pbs = dbSnapshot?.personalBests?.[mode]?.[mode2] as
+    | PersonalBest[]
+    | undefined;
+
+  return pbs?.find(
+    (pb) =>
+      (pb.punctuation ?? false) === punctuation &&
+      (pb.numbers ?? false) === numbers &&
+      pb.difficulty === difficulty &&
+      pb.language === language &&
+      (pb.lazyMode ?? false) === lazyMode,
+  );
+}
+
+function saveLocalPB<M extends Mode>(
+  mode: M,
+  mode2: Mode2<M>,
+  punctuation: boolean,
+  numbers: boolean,
+  language: Language,
+  difficulty: Difficulty,
   lazyMode: boolean,
   wpm: number,
   acc: number,
   raw: number,
-  consistency: number
-): Promise<void> {
+  consistency: number,
+): void {
   if (mode === "quote") return;
   if (!dbSnapshot) return;
   function cont(): void {
@@ -641,19 +655,17 @@ export async function saveLocalPB<M extends SharedTypes.Mode>(
     };
 
     dbSnapshot.personalBests[mode][mode2] ??=
-      [] as unknown as SharedTypes.PersonalBests[M][SharedTypes.Mode2<M>];
+      [] as unknown as PersonalBests[M][Mode2<M>];
 
     (
-      dbSnapshot.personalBests[mode][
-        mode2
-      ] as unknown as SharedTypes.PersonalBest[]
+      dbSnapshot.personalBests[mode][mode2] as unknown as PersonalBest[]
     ).forEach((pb) => {
       if (
-        pb.punctuation === punctuation &&
+        (pb.punctuation ?? false) === punctuation &&
+        (pb.numbers ?? false) === numbers &&
         pb.difficulty === difficulty &&
         pb.language === language &&
-        (pb.lazyMode === lazyMode ||
-          (pb.lazyMode === undefined && lazyMode === false))
+        (pb.lazyMode ?? false) === lazyMode
       ) {
         found = true;
         pb.wpm = wpm;
@@ -666,21 +678,20 @@ export async function saveLocalPB<M extends SharedTypes.Mode>(
     });
     if (!found) {
       //nothing found
-      (
-        dbSnapshot.personalBests[mode][
-          mode2
-        ] as unknown as SharedTypes.PersonalBest[]
-      ).push({
-        language,
-        difficulty,
-        lazyMode,
-        punctuation,
-        wpm,
-        acc,
-        raw,
-        timestamp: Date.now(),
-        consistency,
-      });
+      (dbSnapshot.personalBests[mode][mode2] as unknown as PersonalBest[]).push(
+        {
+          language,
+          difficulty,
+          lazyMode,
+          punctuation,
+          numbers,
+          wpm,
+          acc,
+          raw,
+          timestamp: Date.now(),
+          consistency,
+        },
+      );
     }
   }
 
@@ -689,79 +700,75 @@ export async function saveLocalPB<M extends SharedTypes.Mode>(
   }
 }
 
-export async function getLocalTagPB<M extends SharedTypes.Mode>(
+export async function getLocalTagPB<M extends Mode>(
   tagId: string,
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
+  mode2: Mode2<M>,
   punctuation: boolean,
+  numbers: boolean,
   language: string,
-  difficulty: SharedTypes.Difficulty,
-  lazyMode: boolean
+  difficulty: Difficulty,
+  lazyMode: boolean,
 ): Promise<number> {
-  function cont(): number {
-    let ret = 0;
+  if (dbSnapshot === null) return 0;
 
-    const filteredtag = (getSnapshot()?.tags ?? []).filter(
-      (t) => t._id === tagId
-    )[0];
+  let ret = 0;
 
-    if (filteredtag === undefined) return ret;
+  const filteredtag = (getSnapshot()?.tags ?? []).find((t) => t._id === tagId);
 
-    filteredtag.personalBests ??= {
-      time: {},
-      words: {},
-      quote: {},
-      zen: {},
-      custom: {},
-    };
+  if (filteredtag === undefined) return ret;
 
-    filteredtag.personalBests[mode] ??= {
-      [mode2]: [],
-    };
+  filteredtag.personalBests ??= {
+    time: {},
+    words: {},
+    quote: {},
+    zen: {},
+    custom: {},
+  };
 
-    filteredtag.personalBests[mode][mode2] ??=
-      [] as unknown as SharedTypes.PersonalBests[M][SharedTypes.Mode2<M>];
+  filteredtag.personalBests[mode] ??= {
+    [mode2]: [],
+  };
 
-    const personalBests = (filteredtag.personalBests[mode][mode2] ??
-      []) as SharedTypes.PersonalBest[];
+  filteredtag.personalBests[mode][mode2] ??=
+    [] as unknown as PersonalBests[M][Mode2<M>];
 
-    ret =
-      personalBests.find(
-        (pb) =>
-          pb.punctuation === punctuation &&
-          pb.difficulty === difficulty &&
-          pb.language === language &&
-          (pb.lazyMode === lazyMode ||
-            (pb.lazyMode === undefined && lazyMode === false))
-      )?.wpm ?? 0;
+  const personalBests = (filteredtag.personalBests[mode][mode2] ??
+    []) as PersonalBest[];
 
-    return ret;
-  }
+  ret =
+    personalBests.find(
+      (pb) =>
+        (pb.punctuation ?? false) === punctuation &&
+        (pb.numbers ?? false) === numbers &&
+        pb.difficulty === difficulty &&
+        pb.language === language &&
+        (pb.lazyMode === lazyMode || (pb.lazyMode === undefined && !lazyMode)),
+    )?.wpm ?? 0;
 
-  const retval = dbSnapshot === null ? 0 : cont();
-
-  return retval;
+  return ret;
 }
 
-export async function saveLocalTagPB<M extends SharedTypes.Mode>(
+export async function saveLocalTagPB<M extends Mode>(
   tagId: string,
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
+  mode2: Mode2<M>,
   punctuation: boolean,
-  language: string,
-  difficulty: SharedTypes.Difficulty,
+  numbers: boolean,
+  language: Language,
+  difficulty: Difficulty,
   lazyMode: boolean,
   wpm: number,
   acc: number,
   raw: number,
-  consistency: number
+  consistency: number,
 ): Promise<number | undefined> {
   if (!dbSnapshot) return;
   if (mode === "quote") return;
   function cont(): void {
-    const filteredtag = dbSnapshot?.tags?.filter(
-      (t) => t._id === tagId
-    )[0] as MonkeyTypes.Tag;
+    const filteredtag = dbSnapshot?.tags?.find(
+      (t) => t._id === tagId,
+    ) as SnapshotUserTag;
 
     filteredtag.personalBests ??= {
       time: {},
@@ -776,22 +783,20 @@ export async function saveLocalTagPB<M extends SharedTypes.Mode>(
     };
 
     filteredtag.personalBests[mode][mode2] ??=
-      [] as unknown as SharedTypes.PersonalBests[M][SharedTypes.Mode2<M>];
+      [] as unknown as PersonalBests[M][Mode2<M>];
 
     try {
       let found = false;
 
       (
-        filteredtag.personalBests[mode][
-          mode2
-        ] as unknown as SharedTypes.PersonalBest[]
+        filteredtag.personalBests[mode][mode2] as unknown as PersonalBest[]
       ).forEach((pb) => {
         if (
-          pb.punctuation === punctuation &&
+          (pb.punctuation ?? false) === punctuation &&
+          (pb.numbers ?? false) === numbers &&
           pb.difficulty === difficulty &&
           pb.language === language &&
-          (pb.lazyMode === lazyMode ||
-            (pb.lazyMode === undefined && lazyMode === false))
+          (pb.lazyMode === lazyMode || (pb.lazyMode === undefined && !lazyMode))
         ) {
           found = true;
           pb.wpm = wpm;
@@ -805,14 +810,13 @@ export async function saveLocalTagPB<M extends SharedTypes.Mode>(
       if (!found) {
         //nothing found
         (
-          filteredtag.personalBests[mode][
-            mode2
-          ] as unknown as SharedTypes.PersonalBest[]
+          filteredtag.personalBests[mode][mode2] as unknown as PersonalBest[]
         ).push({
           language,
           difficulty,
           lazyMode,
           punctuation,
+          numbers,
           wpm,
           acc,
           raw,
@@ -835,13 +839,14 @@ export async function saveLocalTagPB<M extends SharedTypes.Mode>(
           difficulty: difficulty,
           lazyMode: lazyMode,
           punctuation: punctuation,
+          numbers: numbers,
           wpm: wpm,
           acc: acc,
           raw: raw,
           timestamp: Date.now(),
           consistency: consistency,
         },
-      ] as unknown as SharedTypes.PersonalBests[M][SharedTypes.Mode2<M>];
+      ] as unknown as PersonalBests[M][Mode2<M>];
     }
   }
 
@@ -852,126 +857,332 @@ export async function saveLocalTagPB<M extends SharedTypes.Mode>(
   return;
 }
 
-export async function updateLbMemory<M extends SharedTypes.Mode>(
+export function deleteLocalTag(tagId: string): void {
+  getSnapshot()?.results?.forEach((result) => {
+    const tagIndex = result.tags.indexOf(tagId);
+    if (tagIndex > -1) {
+      result.tags.splice(tagIndex, 1);
+    }
+  });
+}
+
+export async function updateLocalTagPB<M extends Mode>(
+  tagId: string,
   mode: M,
-  mode2: SharedTypes.Mode2<M>,
-  language: string,
-  rank: number,
-  api = false
+  mode2: Mode2<M>,
+  punctuation: boolean,
+  numbers: boolean,
+  language: Language,
+  difficulty: Difficulty,
+  lazyMode: boolean,
 ): Promise<void> {
+  if (dbSnapshot === null) return;
+
+  const filteredtag = (getSnapshot()?.tags ?? []).find((t) => t._id === tagId);
+
+  if (filteredtag === undefined) return;
+
+  const pb = {
+    wpm: 0,
+    acc: 0,
+    rawWpm: 0,
+    consistency: 0,
+  };
+
+  getSnapshot()?.results?.forEach((result) => {
+    if (result.tags.includes(tagId) && result.wpm > pb.wpm) {
+      if (
+        result.mode === mode &&
+        result.mode2 === mode2 &&
+        result.punctuation === punctuation &&
+        result.numbers === numbers &&
+        result.language === language &&
+        result.difficulty === difficulty &&
+        result.lazyMode === lazyMode
+      ) {
+        pb.wpm = result.wpm;
+        pb.acc = result.acc;
+        pb.rawWpm = result.rawWpm;
+        pb.consistency = result.consistency;
+      }
+    }
+  });
+
+  await saveLocalTagPB(
+    tagId,
+    mode,
+    mode2,
+    punctuation,
+    numbers,
+    language,
+    difficulty,
+    lazyMode,
+    pb.wpm,
+    pb.acc,
+    pb.rawWpm,
+    pb.consistency,
+  );
+}
+
+export async function updateLbMemory<M extends Mode>(
+  mode: M,
+  mode2: Mode2<M> | undefined,
+  language: Language,
+  rank: number,
+  api = false,
+): Promise<void> {
+  if (mode2 === undefined) return;
   if (mode === "time") {
-    const timeMode = mode as "time";
+    const timeMode = mode;
     const timeMode2 = mode2 as "15" | "60";
 
     const snapshot = getSnapshot();
     if (!snapshot) return;
-    if (snapshot.lbMemory === undefined) {
-      snapshot.lbMemory = {
-        time: { "15": { english: 0 }, "60": { english: 0 } },
-      };
-    }
-    if (snapshot.lbMemory[timeMode] === undefined) {
-      snapshot.lbMemory[timeMode] = {
-        "15": { english: 0 },
-        "60": { english: 0 },
-      };
-    }
-    if (snapshot.lbMemory[timeMode][timeMode2] === undefined) {
-      snapshot.lbMemory[timeMode][timeMode2] = {};
-    }
-    const current = snapshot.lbMemory[timeMode][timeMode2][language];
-    snapshot.lbMemory[timeMode][timeMode2][language] = rank;
-    if (api && current !== rank) {
-      await Ape.users.updateLeaderboardMemory(mode, mode2, language, rank);
-    }
-    setSnapshot(snapshot);
-  }
-}
-
-export async function saveConfig(config: MonkeyTypes.Config): Promise<void> {
-  if (Auth?.currentUser) {
-    const response = await Ape.configs.save(config);
-    if (response.status !== 200) {
-      Notifications.add("Failed to save config: " + response.message, -1);
-    }
-  }
-}
-
-export function saveLocalResult(
-  result: SharedTypes.Result<SharedTypes.Mode>
-): void {
-  const snapshot = getSnapshot();
-  if (!snapshot) return;
-
-  if (snapshot !== null && snapshot.results !== undefined) {
-    snapshot.results.unshift(result);
-
-    setSnapshot(snapshot);
-  }
-}
-
-export function updateLocalStats(started: number, time: number): void {
-  const snapshot = getSnapshot();
-  if (!snapshot) return;
-  if (snapshot.typingStats === undefined) {
-    snapshot.typingStats = {} as MonkeyTypes.TypingStats;
-  }
-  if (snapshot !== null && snapshot.typingStats !== undefined) {
-    if (snapshot.typingStats.timeTyping === undefined) {
-      snapshot.typingStats.timeTyping = time;
-    } else {
-      snapshot.typingStats.timeTyping += time;
-    }
-    if (snapshot.typingStats.startedTests === undefined) {
-      snapshot.typingStats.startedTests = started;
-    } else {
-      snapshot.typingStats.startedTests += started;
-    }
-    if (snapshot.typingStats.completedTests === undefined) {
-      snapshot.typingStats.completedTests = 1;
-    } else {
-      snapshot.typingStats.completedTests += 1;
-    }
-  }
-
-  setSnapshot(snapshot);
-}
-
-export function addXp(xp: number): void {
-  const snapshot = getSnapshot();
-  if (!snapshot) return;
-
-  if (snapshot.xp === undefined) {
-    snapshot.xp = 0;
-  }
-  snapshot.xp += xp;
-  setSnapshot(snapshot);
-}
-
-export function addBadge(badge: MonkeyTypes.Badge): void {
-  const snapshot = getSnapshot();
-  if (!snapshot) return;
-
-  if (snapshot.inventory === undefined) {
-    snapshot.inventory = {
-      badges: [],
+    snapshot.lbMemory ??= {
+      time: { "15": { english: 0 }, "60": { english: 0 } },
     };
+    snapshot.lbMemory[timeMode] ??= {
+      "15": { english: 0 },
+      "60": { english: 0 },
+    };
+    snapshot.lbMemory[timeMode][timeMode2] ??= {};
+    const current = snapshot.lbMemory?.[timeMode]?.[timeMode2]?.[language];
+
+    //this is protected above so not sure why it would be undefined
+    const mem = snapshot.lbMemory[timeMode][timeMode2];
+    mem[language] = rank;
+    if (api && current !== rank) {
+      await Ape.users.updateLeaderboardMemory({
+        body: { mode, mode2, language, rank },
+      });
+    }
+    setSnapshot(snapshot);
   }
+}
+
+export type SaveLocalResultData = {
+  xp?: number;
+  xpBreakdown?: XpBreakdown;
+  streak?: number;
+  result?: SnapshotResult<Mode>;
+  isPb?: boolean;
+};
+
+export function saveLocalResult(data: SaveLocalResultData): void {
+  const snapshot = getSnapshot();
+  if (!snapshot) return;
+
+  if (data.result !== undefined) {
+    if (snapshot?.results !== undefined) {
+      snapshot.results.unshift(data.result);
+    }
+    setLastResult(data.result);
+    if (snapshot.testActivity !== undefined) {
+      snapshot.testActivity.increment(new Date(data.result.timestamp));
+    }
+    snapshot.typingStats ??= {
+      timeTyping: 0,
+      startedTests: 0,
+      completedTests: 0,
+    };
+
+    const time =
+      data.result.testDuration +
+      data.result.incompleteTestSeconds -
+      data.result.afkDuration;
+
+    snapshot.typingStats.timeTyping += time;
+    snapshot.typingStats.startedTests += data.result.restartCount + 1;
+    snapshot.typingStats.completedTests += 1;
+
+    if (data.isPb) {
+      saveLocalPB(
+        data.result.mode,
+        data.result.mode2,
+        data.result.punctuation,
+        data.result.numbers,
+        data.result.language,
+        data.result.difficulty,
+        data.result.lazyMode,
+        data.result.wpm,
+        data.result.acc,
+        data.result.rawWpm,
+        data.result.consistency,
+      );
+    }
+  }
+
+  if (data.xp !== undefined) {
+    snapshot.xp ??= 0;
+    snapshot.xp += data.xp;
+  }
+
+  if (data.streak !== undefined) {
+    snapshot.streak = data.streak;
+
+    if (snapshot.streak > snapshot.maxStreak) {
+      snapshot.maxStreak = snapshot.streak;
+    }
+  }
+
+  setSnapshot(snapshot, {
+    dispatchEvent: false,
+  });
+  if (data.xp !== undefined) {
+    setXpBarData({
+      addedXp: data.xp,
+      resultingXp: snapshot.xp,
+      breakdown: data.xpBreakdown,
+    });
+  }
+}
+
+export function addXp(xp: number, breakdown?: XpBreakdown): void {
+  const snapshot = getSnapshot();
+  if (!snapshot) return;
+
+  snapshot.xp ??= 0;
+  snapshot.xp += xp;
+  setSnapshot(snapshot, {
+    dispatchEvent: false,
+  });
+  setXpBarData({
+    addedXp: xp,
+    resultingXp: snapshot.xp,
+    breakdown: breakdown,
+  });
+}
+
+export function updateInboxUnreadSize(newSize: number): void {
+  const snapshot = getSnapshot();
+  if (!snapshot) return;
+
+  snapshot.inboxUnreadSize = newSize;
+  setSnapshot(snapshot);
+}
+
+export function addBadge(badge: Badge): void {
+  const snapshot = getSnapshot();
+  if (!snapshot) return;
+
+  snapshot.inventory ??= {
+    badges: [],
+  };
   snapshot.inventory.badges.push(badge);
   setSnapshot(snapshot);
 }
 
-export function setStreak(streak: number): void {
+export async function getTestActivityCalendar(
+  yearString: string,
+): Promise<TestActivityCalendar | undefined> {
+  if (!isAuthenticated() || dbSnapshot === undefined) return undefined;
+
+  if (yearString === "current") return dbSnapshot.testActivity;
+
+  const currentYear = new Date().getFullYear().toString();
+  if (yearString === currentYear) {
+    return dbSnapshot.testActivity?.getFullYearCalendar();
+  }
+
+  if (dbSnapshot.testActivityByYear === undefined) {
+    showLoaderBar();
+    const response = await Ape.users.getTestActivity();
+    if (response.status !== 200) {
+      showErrorNotification("Error getting test activities", { response });
+      hideLoaderBar();
+      return undefined;
+    }
+
+    dbSnapshot.testActivityByYear = {};
+    for (const year in response.body.data) {
+      if (year === currentYear) continue;
+      const testsByDays = response.body.data[year] ?? [];
+      const lastDay = Dates.addDays(
+        new Date(parseInt(year), 0, 1),
+        testsByDays.length,
+      );
+
+      dbSnapshot.testActivityByYear[year] = new TestActivityCalendar(
+        testsByDays,
+        lastDay,
+        firstDayOfTheWeek,
+        true,
+      );
+    }
+    hideLoaderBar();
+  }
+
+  return dbSnapshot.testActivityByYear[yearString];
+}
+
+export function mergeConnections(connections: Connection[]): void {
   const snapshot = getSnapshot();
   if (!snapshot) return;
 
-  snapshot.streak = streak;
+  const update = convertConnections(connections);
 
-  if (snapshot.streak > snapshot.maxStreak) {
-    snapshot.maxStreak = snapshot.streak;
+  for (const [key, value] of Object.entries(update)) {
+    snapshot.connections[key] = value;
   }
 
   setSnapshot(snapshot);
+}
+
+function convertConnections(
+  connectionsData: Connection[],
+): Snapshot["connections"] {
+  return Object.fromEntries(
+    connectionsData.map((connection) => {
+      const isMyRequest =
+        getAuthenticatedUser()?.uid === connection.initiatorUid;
+
+      return [
+        isMyRequest ? connection.receiverUid : connection.initiatorUid,
+        connection.status === "pending" && !isMyRequest
+          ? "incoming"
+          : connection.status,
+      ];
+    }),
+  );
+}
+
+export function getReceiverUid(
+  connection: Pick<Connection, "initiatorUid" | "receiverUid">,
+): string {
+  const me = getAuthenticatedUser();
+  if (me === null) {
+    throw new Error("expected to be authenticated in getReceiverUid");
+  }
+
+  if (me.uid === connection.initiatorUid) return connection.receiverUid;
+  return connection.initiatorUid;
+}
+
+export async function addFriend(receiverName: string): Promise<true | string> {
+  const result = await Ape.connections.create({ body: { receiverName } });
+
+  if (result.status !== 200) {
+    return `Friend request failed: ${result.body.message}`;
+  } else {
+    const snapshot = getSnapshot();
+    if (snapshot !== undefined) {
+      const receiverUid = getReceiverUid(result.body.data);
+      // oxlint-disable-next-line no-unsafe-member-access
+      snapshot.connections[receiverUid] = result.body.data.status;
+    }
+    return true;
+  }
+}
+
+export function isFriend(uid: string | undefined): boolean {
+  if (uid === undefined || uid === getAuthenticatedUser()?.uid) return false;
+
+  const snapshot = getSnapshot();
+  if (!snapshot) return false;
+
+  return Object.entries(snapshot.connections).some(
+    ([receiverUid, status]) => receiverUid === uid && status === "accepted",
+  );
 }
 
 // export async function DB.getLocalTagPB(tagId) {

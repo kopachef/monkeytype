@@ -1,33 +1,27 @@
-import Config from "../config";
+import { Config } from "../config/store";
+import { qsr } from "../utils/dom";
+import { onCapsLockChange } from "@leonabcd123/modern-caps-lock";
 
-const el = document.querySelector("#capsWarning") as HTMLElement;
-const isMacOs = navigator.platform.startsWith("Mac");
+const el = qsr("#capsWarning");
+let visible = false;
 
 export let capsState = false;
 
-let visible = false;
-
 function show(): void {
   if (!visible) {
-    el?.classList.remove("hidden");
+    el.show();
     visible = true;
   }
 }
 
 function hide(): void {
   if (visible) {
-    el?.classList.add("hidden");
+    el.hide();
     visible = false;
   }
 }
 
-function update(event: JQuery.KeyDownEvent | JQuery.KeyUpEvent): void {
-  if (event?.originalEvent?.key === "CapsLock" && capsState !== null) {
-    capsState = !capsState;
-  } else {
-    capsState = event?.originalEvent?.getModifierState("CapsLock") || false;
-  }
-
+function updateCapsWarningVisibility(): void {
   try {
     if (Config.capsLockWarning && capsState) {
       show();
@@ -37,8 +31,7 @@ function update(event: JQuery.KeyDownEvent | JQuery.KeyUpEvent): void {
   } catch {}
 }
 
-$(document).on("keyup", update);
-
-$(document).on("keydown", (event) => {
-  if (isMacOs) update(event);
+onCapsLockChange((currentCapsState: boolean) => {
+  capsState = currentCapsState;
+  updateCapsWarningVisibility();
 });

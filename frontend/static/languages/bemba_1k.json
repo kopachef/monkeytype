@@ -1,5 +1,9 @@
 {
   "name": "bemba_1k",
+  "rightToLeft": false,
+  "ligatures": false,
+  "orderedByFrequency": false,
+  "bcp47": "bem",
   "words": [
     "abeshile",
     "babika",

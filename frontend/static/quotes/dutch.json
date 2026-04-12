@@ -362,9 +362,9 @@
       "id": 59
     },
     {
-      "text": "Vrijheid is de vrijheid om te zeggen dat twee plus twee vier is. Als dat wordt verleend, volgt al de rest.",
+      "text": "Vrijheid is de vrijheid om te zeggen dat twee plus twee vier is. Als dat wordt verleend, volgt de rest.",
       "source": "George Orwell",
-      "length": 106,
+      "length": 103,
       "id": 60
     },
     {
@@ -378,6 +378,48 @@
       "source": "Ton Lemaire",
       "length": 127,
       "id": 62
+    },
+    {
+      "text": "Als je een rockster wilt worden of gewoon beroemd wilt worden, en dan naakt over straat wilt rennen, dan haal je het nieuws of zoiets. Maar als je wilt dat muziek je levensonderhoud is, speel dan, speel, speel en speel! En uiteindelijk kom je waar je wilt zijn.",
+      "source": "Eddie Van Halen",
+      "length": 261,
+      "id": 63
+    },
+    {
+      "text": "Het belangrijkste aan een persoon is dat je weet wie je bent en wat je wilt. Je moet in staat zijn tot introspectie en jezelf evalueren.",
+      "source": "Louis van Gaal",
+      "length": 136,
+      "id": 64
+    },
+    {
+      "text": "Soms is het belangrijkste op een hele dag de rust die we nemen tussen twee keer diep ademhalen.",
+      "source": "Etty Hillesum",
+      "length": 95,
+      "id": 65
+    },
+    {
+      "text": "Geef al uw geld aan de arme mensen... als zij hetzelfde doen heb je het morgen misschien al terug.",
+      "source": "Herman Brusselmans",
+      "length": 98,
+      "id": 66
+    },
+    {
+      "text": "Schrap het woord 'ik' uit het taalgebruik en de hele mensheid staat met de mond vol tanden en het paniekzweet op het voorhoofd.",
+      "source": "Herman Brusselmans",
+      "length": 127,
+      "id": 67
+    },
+    {
+      "text": "Een James Bond-boek is stom maar opwindend, terwijl een meesterwerk van de Vlaamse literatuur even stom maar daarbij ook nog vervelend is.",
+      "source": "Louis Paul Boon",
+      "length": 138,
+      "id": 68
+    },
+    {
+      "text": "Ik ben absoluut tegen de puurheid van de taal. Als het iets wezenlijks meebrengt, moet je anglicismen, germanismen en gallicismen meteen cultiveren. Ik geloof niet in het uitgedunde, dat men voorhoudt als het enige Nederlands, ik irriteer me aan de Nederlandse overheersing.",
+      "source": "Hugo Claus",
+      "length": 274,
+      "id": 69
     }
   ]
 }

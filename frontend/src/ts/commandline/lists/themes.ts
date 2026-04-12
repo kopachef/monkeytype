@@ -1,14 +1,63 @@
-import Config, * as UpdateConfig from "../../config";
-import { capitalizeFirstLetterOfEachWord } from "../../utils/misc";
+import { Config } from "../../config/store";
+import { setConfig } from "../../config/setters";
+import { capitalizeFirstLetterOfEachWord } from "../../utils/strings";
 import * as ThemeController from "../../controllers/theme-controller";
+import { Command, CommandsSubgroup } from "../types";
+import { ThemesList, ThemeWithName } from "../../constants/themes";
+import { not } from "@monkeytype/util/predicates";
+import { configEvent } from "../../events/config";
+import * as getErrorMessage from "../../utils/error";
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
-  title: "Theme...",
-  configKey: "theme",
-  list: [],
+const isFavorite = (theme: ThemeWithName): boolean =>
+  Config.favThemes.includes(theme.name);
+
+/**
+ * creates a theme command object for the given theme
+ * @param theme the theme to create a command for
+ * @returns a command object for the theme
+ */
+const createThemeCommand = (theme: ThemeWithName): Command => {
+  return {
+    id: "changeTheme" + capitalizeFirstLetterOfEachWord(theme.name),
+    display: theme.name.replace(/_/g, " "),
+    configValue: theme.name,
+    // customStyle: `color:${theme.main};background:${theme.bg};`,
+    customData: {
+      main: theme.main,
+      bg: theme.bg,
+      sub: theme.sub,
+      text: theme.text,
+      isFavorite: isFavorite(theme),
+    },
+    hover: (): void => {
+      // previewTheme(theme.name);
+      ThemeController.preview(theme.name);
+    },
+    exec: (): void => {
+      setConfig("theme", theme.name);
+    },
+  };
 };
 
-const commands: MonkeyTypes.Command[] = [
+/**
+ * sorts themes with favorites first, then non-favorites
+ * @param themes the themes to sort
+ * @returns sorted array of themes
+ */
+const sortThemesByFavorite = (themes: ThemeWithName[]): ThemeWithName[] => [
+  ...themes.filter(isFavorite),
+  ...themes.filter(not(isFavorite)),
+];
+
+const subgroup: CommandsSubgroup = {
+  title: "Theme...",
+  configKey: "theme",
+  list: sortThemesByFavorite(ThemesList).map((theme) =>
+    createThemeCommand(theme),
+  ),
+};
+
+const commands: Command[] = [
   {
     id: "changeTheme",
     display: "Theme...",
@@ -17,54 +66,31 @@ const commands: MonkeyTypes.Command[] = [
   },
 ];
 
-function update(themes: MonkeyTypes.Theme[]): void {
+export function update(themes: ThemeWithName[]): void {
+  // clear the current list
   subgroup.list = [];
-  const favs: MonkeyTypes.Command[] = [];
-  themes.forEach((theme) => {
-    if ((Config.favThemes as string[]).includes(theme.name)) {
-      favs.push({
-        id: "changeTheme" + capitalizeFirstLetterOfEachWord(theme.name),
-        display: theme.name.replace(/_/g, " "),
-        configValue: theme.name,
-        // customStyle: `color:${theme.mainColor};background:${theme.bgColor};`,
-        customData: {
-          mainColor: theme.mainColor,
-          bgColor: theme.bgColor,
-          subColor: theme.subColor,
-          textColor: theme.textColor,
-        },
-        hover: (): void => {
-          // previewTheme(theme.name);
-          ThemeController.preview(theme.name);
-        },
-        exec: (): void => {
-          UpdateConfig.setTheme(theme.name);
-        },
-      });
-    } else {
-      subgroup.list.push({
-        id: "changeTheme" + capitalizeFirstLetterOfEachWord(theme.name),
-        display: theme.name.replace(/_/g, " "),
-        configValue: theme.name,
-        // customStyle: `color:${theme.mainColor};background:${theme.bgColor}`,
-        customData: {
-          mainColor: theme.mainColor,
-          bgColor: theme.bgColor,
-          subColor: theme.subColor,
-          textColor: theme.textColor,
-        },
-        hover: (): void => {
-          // previewTheme(theme.name);
-          ThemeController.preview(theme.name);
-        },
-        exec: (): void => {
-          UpdateConfig.setTheme(theme.name);
-        },
-      });
-    }
-  });
-  subgroup.list = [...favs, ...subgroup.list];
+
+  // rebuild with favorites first, then non-favorites
+  subgroup.list = sortThemesByFavorite(themes).map((theme) =>
+    createThemeCommand(theme),
+  );
 }
 
+// subscribe to theme-related config events to update the theme command list
+configEvent.subscribe(({ key }) => {
+  if (key === "favThemes") {
+    // update themes list when favorites change
+    try {
+      update(ThemesList);
+    } catch (e: unknown) {
+      console.error(
+        getErrorMessage.createErrorMessage(
+          e,
+          "Failed to update themes commands",
+        ),
+      );
+    }
+  }
+});
+
 export default commands;
-export { update };

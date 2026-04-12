@@ -1,21 +1,41 @@
-const siteKey = "6Lc-V8McAAAAAJ7s6LGNe7MBZnRiwbsbiWts87aj";
+import { envConfig } from "virtual:env-config";
+const siteKey = envConfig.recaptchaSiteKey;
 
 const captchas: Record<string, number> = {};
+
+type Grecaptcha = {
+  render: (
+    element: HTMLElement,
+    options: { sitekey: string; callback?: (responseToken: string) => void },
+  ) => number;
+  reset: (widgetId: number) => void;
+  getResponse: (widgetId: number) => string;
+};
+
+function getGrecaptcha(): Grecaptcha {
+  if (!("grecaptcha" in window)) {
+    throw new Error("grecaptcha is not defined");
+  }
+
+  return window.grecaptcha as Grecaptcha;
+}
+
+export function isCaptchaAvailable(): boolean {
+  return "grecaptcha" in window;
+}
 
 export function render(
   element: HTMLElement,
   id: string,
-  callback?: (responseToken: string) => void
+  callback?: (responseToken: string) => void,
 ): void {
   if (captchas[id] !== undefined && captchas[id] !== null) {
     return;
   }
-
-  const widgetId = grecaptcha.render(element, {
+  const widgetId = getGrecaptcha().render(element, {
     sitekey: siteKey,
     callback,
   });
-
   captchas[id] = widgetId;
 }
 
@@ -23,14 +43,12 @@ export function reset(id: string): void {
   if (captchas[id] === undefined || captchas[id] === null) {
     return;
   }
-
-  grecaptcha.reset(captchas[id]);
+  getGrecaptcha().reset(captchas[id]);
 }
 
 export function getResponse(id: string): string {
   if (captchas[id] === undefined || captchas[id] === null) {
     return "";
   }
-
-  return grecaptcha.getResponse(captchas[id]);
+  return getGrecaptcha().getResponse(captchas[id]);
 }

@@ -1,46 +1,34 @@
 import * as TestStats from "../test/test-stats";
-import * as TestUI from "../test/test-ui";
-import * as ManualRestart from "../test/manual-restart-tracker";
 import * as TestLogic from "../test/test-logic";
 import * as Funbox from "../test/funbox/funbox";
 import Page from "./page";
 import { updateFooterAndVerticalAds } from "../controllers/ad-controller";
 import * as ModesNotice from "../elements/modes-notice";
 import * as Keymap from "../elements/keymap";
-import * as TestConfig from "../test/test-config";
-import * as CookiePopup from "../popups/cookie-popup";
+import { blurInputElement } from "../input/input-element";
+import { qsr } from "../utils/dom";
 
-export const page = new Page(
-  "test",
-  $(".page.pageTest"),
-  "/",
-  async () => {
-    ManualRestart.set();
-    TestLogic.restart();
-    Funbox.clear();
-    ModesNotice.update();
-    $("#wordsInput").trigger("focusout");
+export const page = new Page({
+  id: "test",
+  element: qsr(".page.pageTest"),
+  path: "/",
+  beforeHide: async (): Promise<void> => {
+    blurInputElement();
   },
-  async () => {
-    updateFooterAndVerticalAds(true);
-  },
-  async () => {
-    updateFooterAndVerticalAds(false);
-    TestStats.resetIncomplete();
-    ManualRestart.set();
+  afterHide: async (): Promise<void> => {
     TestLogic.restart({
       noAnim: true,
     });
-    TestConfig.instantUpdate();
-    Funbox.activate();
-    Keymap.refresh();
+    void Funbox.clear();
+    void ModesNotice.update();
+    updateFooterAndVerticalAds(true);
   },
-  async () => {
-    if (CookiePopup.isVisible()) {
-      TestUI.blurWords();
-      $("#cookiePopupWrapper").trigger("focus");
-    } else {
-      TestUI.focusWords();
-    }
-  }
-);
+  beforeShow: async (): Promise<void> => {
+    updateFooterAndVerticalAds(false);
+    TestStats.resetIncomplete();
+    TestLogic.restart({
+      noAnim: true,
+    });
+    void Keymap.refresh();
+  },
+});

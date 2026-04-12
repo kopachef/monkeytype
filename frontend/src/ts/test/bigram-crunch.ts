@@ -1,4 +1,4 @@
-import { randomElementFromArray } from "../utils/misc";
+import { randomElementFromArray } from "../utils/arrays";
 import { Wordset } from "./wordset";
 
 const bigramScores: { [bigram: string]: BigramScore } = {};
@@ -14,8 +14,8 @@ class BigramScore {
   constructor() {
     this.score = 0.0;
     this.misses = 0;
-    // Initialize occurrences t 2. This does two things.
-    // 1. Avoid log(0) in the updateScore method. 2. Occurrences only updatded during word selection. Score needs to be updated as test progresses.
+    // Avoid log(0). Occurrences are updated during word selection while misses
+    // are updated during typing, so the score needs an initial denominator.
     this.occurrences = 2;
   }
 
@@ -46,7 +46,7 @@ export function updateBigramScore(
 ): void {
   if (!isCorrect) {
     const bigramStartIndex = (currentInput?.length ?? 0) - 1;
-    const bigram = currentWord.slice(bigramStartIndex, bigramStartIndex + 2); // 2 is the bigram length
+    const bigram = currentWord.slice(bigramStartIndex, bigramStartIndex + 2);
     if (bigram.length < 2) {
       // Sometimes single letter characters may be found reject them here.
       return;
@@ -126,7 +126,7 @@ export function getWord(wordset: Wordset): string {
   return chosenWord;
 }
 
-// Debuging purposes.
+// Debugging purposes.
 export function logBigramScores(): boolean {
   const bigramScoresForLogging: {
     [key: string]: { score: number; occurrences: number; misses: number };

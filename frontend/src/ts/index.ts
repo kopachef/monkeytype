@@ -1,68 +1,109 @@
-// this file should be concatenated at the top of the legacy ts files
+// register signal tracking hook before any signals are created
+import "./dev/signal-tracker";
 
-import "../styles/index.scss";
-import "./firebase";
+//enable solidjs-devtools
+import "solid-devtools";
 
+import "./event-handlers/global";
+import "./event-handlers/keymap";
+import "./event-handlers/test";
+import "./event-handlers/settings";
+import "./event-handlers/account";
+import "./modals/google-sign-up";
+
+import { init } from "./firebase";
 import * as Logger from "./utils/logger";
 import * as DB from "./db";
 import "./ui";
+import "./elements/settings/account-settings-notice";
 import "./controllers/ad-controller";
-import Config from "./config";
+import { Config } from "./config/store";
 import * as TestStats from "./test/test-stats";
 import * as Replay from "./test/replay";
 import * as TestTimer from "./test/test-timer";
 import * as Result from "./test/result";
-import "./controllers/account-controller";
-import { enable } from "./states/glarses-mode";
+import { onAuthStateChanged } from "./auth";
+import { enable } from "./legacy-states/glarses-mode";
 import "./test/caps-warning";
-import "./popups/support-popup";
-import "./popups/contact-popup";
-import "./popups/version-popup";
-import "./popups/edit-preset-popup";
-import "./popups/set-streak-hour-offset";
-import "./popups/simple-popups";
-import "./controllers/input-controller";
-import "./ready";
+import "./modals/simple-modals";
+import * as CookiesModal from "./modals/cookies";
+import "./input/listeners";
 import "./controllers/route-controller";
-import "./pages/about";
-import "./popups/pb-tables-popup";
-import "./elements/scroll-to-top";
-import "./popups/mobile-test-config-popup";
-import "./popups/edit-tags-popup";
-import "./popups/google-sign-up-popup";
-import "./popups/result-tags-popup";
 import * as Account from "./pages/account";
-import "./elements/leaderboards";
-import "./commandline/index";
 import "./elements/no-css";
 import { egVideoListener } from "./popups/video-ad-popup";
-import "./states/connection";
+import "./legacy-states/connection";
 import "./test/tts";
-import "./elements/fps-counter";
-import "./controllers/profile-search-controller";
+import { addToGlobal } from "./utils/misc";
+import * as Focus from "./test/focus";
+import { fetchLatestVersion } from "./utils/version";
+import * as Sentry from "./sentry";
+import * as Cookies from "./cookies";
+import "./elements/psa";
+import "./controllers/url-handler";
+import "./modals/last-signed-out-result";
+import { applyEngineSettings } from "./anim";
+import { qs, qsa, qsr } from "./utils/dom";
+import { mountComponents } from "./components/mount";
+import "./ready";
+import { setVersion } from "./states/core";
+import { loadFromLocalStorage } from "./config/lifecycle";
 
-type ExtendedGlobal = typeof globalThis & MonkeyTypes.Global;
+import "./input/hotkeys";
 
-const extendedGlobal = global as ExtendedGlobal;
+// Lock Math.random
+Object.defineProperty(Math, "random", {
+  value: Math.random,
+  writable: false,
+  configurable: false,
+  enumerable: true,
+});
 
-extendedGlobal.snapshot = DB.getSnapshot;
+// Freeze Math object
+Object.freeze(Math);
 
-extendedGlobal.config = Config;
+// Lock Math on window
+Object.defineProperty(window, "Math", {
+  value: Math,
+  writable: false,
+  configurable: false,
+  enumerable: true,
+});
 
-extendedGlobal.toggleFilterDebug = Account.toggleFilterDebug;
+applyEngineSettings();
+void loadFromLocalStorage();
+void fetchLatestVersion().then((data) => {
+  if (data === null) return;
+  setVersion(data);
+});
 
-extendedGlobal.glarsesMode = enable;
+Focus.set(true, true);
+const accepted = Cookies.getAcceptedCookies();
+if (accepted === null) {
+  CookiesModal.show();
+}
+void init(onAuthStateChanged).then(() => {
+  if (accepted !== null) {
+    Cookies.activateWhatsAccepted();
+  }
+});
 
-extendedGlobal.stats = TestStats.getStats;
+addToGlobal({
+  snapshot: DB.getSnapshot,
+  config: Config,
+  toggleFilterDebug: Account.toggleFilterDebug,
+  glarsesMode: enable,
+  stats: TestStats.getStats,
+  replay: Replay.getReplayExport,
+  enableTimerDebug: TestTimer.enableTimerDebug,
+  getTimerStats: TestTimer.getTimerStats,
+  toggleSmoothedBurst: Result.toggleSmoothedBurst,
+  egVideoListener: egVideoListener,
+  toggleDebugLogs: Logger.toggleDebugLogs,
+  toggleSentryDebug: Sentry.toggleDebug,
+  qs: qs,
+  qsa: qsa,
+  qsr: qsr,
+});
 
-extendedGlobal.replay = Replay.getReplayExport;
-
-extendedGlobal.enableTimerDebug = TestTimer.enableTimerDebug;
-
-extendedGlobal.getTimerStats = TestTimer.getTimerStats;
-
-extendedGlobal.toggleUnsmoothedRaw = Result.toggleUnsmoothedRaw;
-
-extendedGlobal.egVideoListener = egVideoListener;
-
-extendedGlobal.toggleDebugLogs = Logger.toggleDebugLogs;
+mountComponents();

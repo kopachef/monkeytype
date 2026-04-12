@@ -1,31 +1,46 @@
-import Config, * as UpdateConfig from "../../config";
+import { ThemeName } from "@monkeytype/schemas/configs";
+import { Config } from "../../config/store";
+import { setConfig } from "../../config/setters";
+import { randomTheme } from "../../controllers/theme-controller";
+import { Command } from "../types";
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "addThemeToFavorite",
     display: "Add current theme to favorite",
-    icon: "fa-heart",
+    icon: "fa-star",
     available: (): boolean => {
-      return !Config.customTheme && !Config.favThemes.includes(Config.theme);
+      return (
+        !Config.customTheme &&
+        !Config.favThemes.includes((randomTheme as ThemeName) ?? Config.theme)
+      );
     },
     exec: (): void => {
       const { theme, favThemes, customTheme } = Config;
-      if (!customTheme && !favThemes.includes(theme)) {
-        UpdateConfig.setFavThemes([...favThemes, theme]);
+      const themeToUpdate = randomTheme ?? theme;
+      if (!customTheme && !favThemes.includes(themeToUpdate as ThemeName)) {
+        setConfig("favThemes", [...favThemes, themeToUpdate as ThemeName]);
       }
     },
   },
   {
     id: "removeThemeFromFavorite",
     display: "Remove current theme from favorite",
-    icon: "fa-heart-broken",
+    icon: "fa-star",
+    iconType: "regular",
     available: (): boolean => {
-      return !Config.customTheme && Config.favThemes.includes(Config.theme);
+      return (
+        !Config.customTheme &&
+        Config.favThemes.includes((randomTheme as ThemeName) ?? Config.theme)
+      );
     },
     exec: (): void => {
       const { theme, favThemes, customTheme } = Config;
-      if (!customTheme && favThemes.includes(theme)) {
-        UpdateConfig.setFavThemes([...favThemes.filter((t) => t !== theme)]);
+      const themeToUpdate = (randomTheme as ThemeName) ?? theme;
+      if (!customTheme && favThemes.includes(themeToUpdate)) {
+        setConfig("favThemes", [
+          ...favThemes.filter((t) => t !== themeToUpdate),
+        ]);
       }
     },
   },

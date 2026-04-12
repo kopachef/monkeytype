@@ -1,34 +1,30 @@
 import { stemmer } from "stemmer";
 import levenshtein from "damerau-levenshtein";
 
-export interface SearchService<T> {
-  query: (query: string) => SearchResult<T>;
-}
+export type SearchService<T> = {
+  query: (query: string, ids: number[]) => SearchResult<T>;
+};
 
-interface SearchServiceOptions {
+type SearchServiceOptions = {
   fuzzyMatchSensitivity: number;
   scoreForSimilarMatch: number;
   scoreForExactMatch: number;
-}
+};
 
-interface InternalDocument {
+type InternalDocument = {
   id: number;
   maxTermFrequency: number;
   termFrequencies: Record<string, number>;
-}
+};
 
-interface ReverseIndex {
-  [key: string]: Set<InternalDocument>;
-}
+type ReverseIndex = Record<string, Set<InternalDocument>>;
 
-interface TokenMap {
-  [key: string]: Set<string>;
-}
+type TokenMap = Record<string, Set<string>>;
 
-interface SearchResult<T> {
+type SearchResult<T> = {
   results: T[];
   matchedQueryTerms: string[];
-}
+};
 
 export type TextExtractor<T> = (document: T) => string;
 
@@ -40,7 +36,7 @@ const DEFAULT_OPTIONS: SearchServiceOptions = {
 
 function inverseDocumentFrequency(
   numberOfDocuments: number,
-  numberOfDocumentsWithTerm: number
+  numberOfDocumentsWithTerm: number,
 ): number {
   if (numberOfDocumentsWithTerm === 0) {
     return 0;
@@ -53,7 +49,7 @@ const ALPHA = 0.4; // Smoothing term that dampens the contribution of tf/max tf
 
 function normalizedTermFrequency(
   term: string,
-  document: InternalDocument
+  document: InternalDocument,
 ): number {
   return (
     ALPHA +
@@ -63,13 +59,13 @@ function normalizedTermFrequency(
 }
 
 function tokenize(text: string): string[] {
-  return text.match(/[^\\\][.,"/#!?$%^&*;:{}=\-_`~()\s]+/g) || [];
+  return text.match(/[^\\\][.,"/#!?$%^&*;:{}=\-_`~()\s]+/g) ?? [];
 }
 
 export const buildSearchService = <T>(
   documents: T[],
   getSearchableText: TextExtractor<T>,
-  options: SearchServiceOptions = DEFAULT_OPTIONS
+  options: SearchServiceOptions = DEFAULT_OPTIONS,
 ): SearchService<T> => {
   const reverseIndex: ReverseIndex = {};
   const normalizedTokenToOriginal: TokenMap = {};
@@ -88,12 +84,12 @@ export const buildSearchService = <T>(
     rawTokens.forEach((token) => {
       const stemmedToken = stemmer(token);
 
-      if (!(stemmedToken in normalizedTokenToOriginal)) {
+      if (!Object.hasOwn(normalizedTokenToOriginal, stemmedToken)) {
         normalizedTokenToOriginal[stemmedToken] = new Set<string>();
       }
       normalizedTokenToOriginal[stemmedToken]?.add(token);
 
-      if (!(stemmedToken in reverseIndex)) {
+      if (!Object.hasOwn(reverseIndex, stemmedToken)) {
         reverseIndex[stemmedToken] = new Set<InternalDocument>();
       }
       reverseIndex[stemmedToken]?.add(internalDocument);
@@ -102,10 +98,10 @@ export const buildSearchService = <T>(
         internalDocument.termFrequencies[stemmedToken] = 0;
       }
 
-      internalDocument.termFrequencies[stemmedToken]++;
+      (internalDocument.termFrequencies[stemmedToken] as number) += 1;
       maxTermFrequency = Math.max(
         maxTermFrequency,
-        internalDocument.termFrequencies[stemmedToken] as number
+        internalDocument.termFrequencies[stemmedToken] as number,
       );
     });
 
@@ -114,14 +110,14 @@ export const buildSearchService = <T>(
 
   const tokenSet = Object.keys(reverseIndex);
 
-  const query = (searchQuery: string): SearchResult<T> => {
+  const query = (searchQuery: string, ids: number[]): SearchResult<T> => {
     const searchResult: SearchResult<T> = {
       results: [],
       matchedQueryTerms: [],
     };
 
     const normalizedSearchQuery = new Set<string>(
-      tokenize(searchQuery).map((token) => stemmer(token))
+      tokenize(searchQuery).map((token) => stemmer(token)),
     );
     if (normalizedSearchQuery.size === 0) {
       return searchResult;
@@ -142,7 +138,7 @@ export const buildSearchService = <T>(
 
           const idf = inverseDocumentFrequency(
             documents.length,
-            documentMatches.size
+            documentMatches.size,
           );
           documentMatches.forEach((document) => {
             const currentScore = results.get(document.id) ?? 0;
@@ -159,7 +155,10 @@ export const buildSearchService = <T>(
 
             const scoreForToken = score * idf * termFrequency;
 
-            results.set(document.id, currentScore + scoreForToken);
+            const quote = documents[document.id] as InternalDocument;
+            if (ids.length === 0 || ids.includes(quote?.id)) {
+              results.set(document.id, currentScore + scoreForToken);
+            }
           });
 
           normalizedTokenToOriginal[token]?.forEach((originalToken) => {

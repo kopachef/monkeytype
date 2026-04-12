@@ -1,124 +1,140 @@
-import Config from "./config";
+import { Config } from "./config/store";
 import * as Caret from "./test/caret";
-import * as Notifications from "./elements/notifications";
 import * as CustomText from "./test/custom-text";
 import * as TestState from "./test/test-state";
-import * as ConfigEvent from "./observables/config-event";
+import { configEvent } from "./events/config";
 import { debounce, throttle } from "throttle-debounce";
 import * as TestUI from "./test/test-ui";
-import { get as getActivePage } from "./states/active-page";
-import { isDevEnvironment } from "./utils/misc";
+import { getActivePage, getGlobalOffsetTop } from "./states/core";
+import { isDevEnvironment } from "./utils/env";
+import { isCustomTextLong } from "./legacy-states/custom-text-name";
+import { canQuickRestart } from "./utils/quick-restart";
+import { FontName } from "@monkeytype/schemas/fonts";
+import { qs, qsr } from "./utils/dom";
+import { createEffect } from "solid-js";
+import fileStorage from "./utils/file-storage";
+import { convertRemToPixels } from "./utils/numbers";
 
-function updateKeytips(): void {
-  const modifierKey = window.navigator.userAgent.toLowerCase().includes("mac")
-    ? "cmd"
-    : "ctrl";
+let isPreviewingFont = false;
+export function previewFontFamily(font: FontName): void {
+  document.documentElement.style.setProperty(
+    "--font",
+    '"' +
+      font.replaceAll(/_/g, " ") +
+      '", "Roboto Mono", "Vazirharf", "monospace"',
+  );
+  void TestUI.updateHintsPositionDebounced();
+  isPreviewingFont = true;
+}
 
-  if (Config.quickRestart === "esc") {
-    $(".pageSettings .tip").html(`
-    tip: You can also change all these settings quickly using the
-    command line (<key>${modifierKey}</key>+<key>shift</key>+<key>p</key>)`);
+export async function applyFontFamily(): Promise<void> {
+  let font = Config.fontFamily.replace(/_/g, " ");
+
+  const localFont = await fileStorage.getFile("LocalFontFamilyFile");
+  if (localFont === undefined) {
+    //use config font
+    qs(".customFont")?.empty();
   } else {
-    $(".pageSettings .tip").html(`
-    tip: You can also change all these settings quickly using the
-    command line (<key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key>)`);
+    font = "LOCALCUSTOM";
+
+    qs(".customFont")?.setHtml(`
+      @font-face{ 
+        font-family: LOCALCUSTOM;
+        src: url(${localFont});
+        font-weight: 400;
+        font-style: normal;
+        font-display: block;
+      }`);
   }
 
-  if (Config.quickRestart === "esc") {
-    $("footer .keyTips").html(`
-    <key>esc</key> - restart test<br>
-    <key>tab</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
-  } else if (Config.quickRestart === "tab") {
-    $("footer .keyTips").html(`
-    <key>tab</key> - restart test<br>
-      <key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
-  } else if (Config.quickRestart === "enter") {
-    $("footer .keyTips").html(`
-    <key>enter</key> - restart test<br>
-      <key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
-  } else {
-    $("footer .keyTips").html(`
-    <key>tab</key> + <key>enter</key> - restart test<br>
-    <key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
+  document.documentElement.style.setProperty(
+    "--font",
+    `"${font}", "Roboto Mono", "Vazirharf", monospace`,
+  );
+}
+
+export function clearFontPreview(): void {
+  if (!isPreviewingFont) return;
+  previewFontFamily(Config.fontFamily);
+  isPreviewingFont = false;
+}
+
+export function setMediaQueryDebugLevel(level: number): void {
+  const body = document.querySelector("body") as HTMLElement;
+
+  body.classList.remove("mediaQueryDebugLevel1");
+  body.classList.remove("mediaQueryDebugLevel2");
+  body.classList.remove("mediaQueryDebugLevel3");
+
+  if (level > 0 && level < 4) {
+    body.classList.add(`mediaQueryDebugLevel${level}`);
   }
 }
 
 if (isDevEnvironment()) {
-  window.onerror = function (error): void {
-    Notifications.add(error.toString(), -1);
-  };
-  $("header #logo .top").text("localhost");
-  $("head title").text($("head title").text() + " (localhost)");
-  $("body").append(
-    `<div class="devIndicator tl">local</div><div class="devIndicator br">local</div>`
+  qs("head title")?.setText(
+    (qs("head title")?.native.textContent ?? "") + " (localhost)",
+  );
+  qs("body")?.appendHtml(
+    `<div class="devIndicator tl">local</div><div class="devIndicator br">local</div>`,
   );
 }
-
-//stop space scrolling
-window.addEventListener("keydown", function (e) {
-  if (e.code === "Space" && e.target === document.body) {
-    e.preventDefault();
-  }
-});
 
 window.addEventListener("beforeunload", (event) => {
   // Cancel the event as stated by the standard.
   if (
-    (Config.mode === "words" && Config.words < 1000) ||
-    (Config.mode === "time" && Config.time < 3600) ||
-    Config.mode === "quote" ||
-    (Config.mode === "custom" &&
-      CustomText.isWordRandom &&
-      CustomText.word < 1000) ||
-    (Config.mode === "custom" &&
-      CustomText.isTimeRandom &&
-      CustomText.time < 1000) ||
-    (Config.mode === "custom" &&
-      !CustomText.isWordRandom &&
-      CustomText.text.length < 1000)
+    canQuickRestart(
+      Config.mode,
+      Config.words,
+      Config.time,
+      CustomText.getData(),
+      isCustomTextLong() ?? false,
+    )
   ) {
     //ignore
   } else {
     if (TestState.isActive) {
       event.preventDefault();
-      // Chrome requires returnValue to be set.
+      // Included for legacy support, e.g. Chrome/Edge < 119
+      // oxlint-disable-next-line no-deprecated
       event.returnValue = "";
     }
   }
 });
 
-const debouncedEvent = debounce(250, async () => {
-  Caret.updatePosition();
-  if (getActivePage() === "test" && !TestUI.resultVisible) {
+const debouncedEvent = debounce(250, () => {
+  if (getActivePage() === "test" && !TestState.resultVisible) {
     if (Config.tapeMode !== "off") {
-      TestUI.scrollTape();
+      void TestUI.scrollTape();
     } else {
-      const word =
-        document.querySelectorAll<HTMLElement>("#words .word")[
-          TestUI.currentWordElementIndex - 1
-        ];
-      if (word) {
-        const currentTop: number = Math.floor(word.offsetTop);
-        TestUI.lineJump(currentTop);
-      }
+      void TestUI.centerActiveLine();
+      void TestUI.updateHintsPositionDebounced();
     }
-  }
-  setTimeout(() => {
-    if ($("#wordsInput").is(":focus")) {
+    setTimeout(() => {
+      TestUI.updateWordsInputPosition();
+      TestUI.focusWords();
       Caret.show();
-    }
-  }, 250);
+    }, 250);
+  }
 });
 
 const throttledEvent = throttle(250, () => {
   Caret.hide();
 });
 
-$(window).on("resize", () => {
+window.addEventListener("resize", () => {
   throttledEvent();
   debouncedEvent();
 });
 
-ConfigEvent.subscribe((eventKey) => {
-  if (eventKey === "quickRestart") updateKeytips();
+createEffect(() => {
+  qsr("#app").setStyle({
+    paddingTop: getGlobalOffsetTop() + convertRemToPixels(2) + "px",
+  });
+});
+
+configEvent.subscribe(async ({ key }) => {
+  if (key === "fontFamily") {
+    await applyFontFamily();
+  }
 });

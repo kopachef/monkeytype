@@ -1,6 +1,12 @@
-import * as UpdateConfig from "../config";
-import * as ConfigEvent from "../observables/config-event";
+import { CustomBackgroundFilter } from "@monkeytype/schemas/configs";
+import { setConfig } from "../config/setters";
+import { configEvent } from "../events/config";
 import { debounce } from "throttle-debounce";
+import { qs, qsr } from "../utils/dom";
+
+const section = qsr(
+  ".pageSettings .section[data-config-name='customBackgroundFilter']",
+);
 
 const filters = {
   blur: {
@@ -40,96 +46,96 @@ export function apply(): void {
     filter: filterCSS,
     width: `calc(100% + ${filters.blur.value * 4}rem)`,
     height: `calc(100% + ${filters.blur.value * 4}rem)`,
-    left: `-${filters.blur.value * 2}rem`,
-    top: `-${filters.blur.value * 2}rem`,
+    // left: `-${filters.blur.value * 2}rem`,
+    // top: `-${filters.blur.value * 2}rem`,
     position: "absolute",
   };
-  $(".customBackground img").css(css);
+  qs(".customBackground img")?.setStyle(css);
 }
 
 function syncSliders(): void {
-  $(".section.customBackgroundFilter .blur input").val(filters["blur"].value);
-  $(".section.customBackgroundFilter .brightness input").val(
-    filters["brightness"].value
-  );
-  $(".section.customBackgroundFilter .saturate input").val(
-    filters["saturate"].value
-  );
-  $(".section.customBackgroundFilter .opacity input").val(
-    filters["opacity"].value
-  );
+  section
+    .qs<HTMLInputElement>(".blur-filter input")
+    ?.setValue(filters.blur.value.toString());
+  section
+    .qs<HTMLInputElement>(".brightness input")
+    ?.setValue(filters.brightness.value.toString());
+  section
+    .qs<HTMLInputElement>(".saturate input")
+    ?.setValue(filters.saturate.value.toString());
+  section
+    .qs<HTMLInputElement>(".opacity input")
+    ?.setValue(filters.opacity.value.toString());
 }
 
 function updateNumbers(): void {
-  $(".section.customBackgroundFilter .blur .value").html(
-    filters.blur.value.toFixed(1)
-  );
-  $(".section.customBackgroundFilter .brightness .value").html(
-    filters.brightness.value.toFixed(1)
-  );
-  $(".section.customBackgroundFilter .saturate .value").html(
-    filters.saturate.value.toFixed(1)
-  );
-  $(".section.customBackgroundFilter .opacity .value").html(
-    filters.opacity.value.toFixed(1)
-  );
+  section.qs(".blur-filter .value")?.setHtml(filters.blur.value.toFixed(1));
+  section
+    .qs(".brightness .value")
+    ?.setHtml(filters.brightness.value.toFixed(1));
+  section.qs(".saturate .value")?.setHtml(filters.saturate.value.toFixed(1));
+  section.qs(".opacity .value")?.setHtml(filters.opacity.value.toFixed(1));
 }
 
-function loadConfig(config: MonkeyTypes.CustomBackgroundFilter): void {
+export function updateUI(): void {
+  syncSliders();
+  updateNumbers();
+}
+
+function loadConfig(config: CustomBackgroundFilter): void {
   filters.blur.value = config[0];
   filters.brightness.value = config[1];
   filters.saturate.value = config[2];
   filters.opacity.value = config[3];
-  updateNumbers();
-  syncSliders();
+  updateUI();
 }
 
-$(".section.customBackgroundFilter .blur input").on("input", () => {
-  filters["blur"].value = parseFloat(
-    $(".section.customBackgroundFilter .blur input").val() as string
+section.qs(".blur-filter input")?.on("input", () => {
+  filters.blur.value = parseFloat(
+    section.qs<HTMLInputElement>(".blur-filter input")?.getValue() ?? "0",
   );
   updateNumbers();
   apply();
 });
 
-$(".section.customBackgroundFilter .brightness input").on("input", () => {
-  filters["brightness"].value = parseFloat(
-    $(".section.customBackgroundFilter .brightness input").val() as string
+section.qs(".brightness input")?.on("input", () => {
+  filters.brightness.value = parseFloat(
+    section.qs<HTMLInputElement>(".brightness input")?.getValue() ?? "1",
   );
   updateNumbers();
   apply();
 });
 
-$(".section.customBackgroundFilter .saturate input").on("input", () => {
-  filters["saturate"].value = parseFloat(
-    $(".section.customBackgroundFilter .saturate input").val() as string
+section.qs(".saturate input")?.on("input", () => {
+  filters.saturate.value = parseFloat(
+    section.qs<HTMLInputElement>(".saturate input")?.getValue() ?? "1",
   );
   updateNumbers();
   apply();
 });
 
-$(".section.customBackgroundFilter .opacity input").on("input", () => {
-  filters["opacity"].value = parseFloat(
-    $(".section.customBackgroundFilter .opacity input").val() as string
+section.qs(".opacity input")?.on("input", () => {
+  filters.opacity.value = parseFloat(
+    section.qs<HTMLInputElement>(".opacity input")?.getValue() ?? "1",
   );
   updateNumbers();
   apply();
 });
 
-$(".section.customBackgroundFilter input").on("input", () => {
+section.qsa("input")?.on("input", () => {
   debouncedSave();
 });
 
 const debouncedSave = debounce(2000, async () => {
   const arr = Object.keys(filters).map(
-    (filterKey) => filters[filterKey as keyof typeof filters].value
-  ) as MonkeyTypes.CustomBackgroundFilter;
-  UpdateConfig.setCustomBackgroundFilter(arr, false);
+    (filterKey) => filters[filterKey as keyof typeof filters].value,
+  ) as CustomBackgroundFilter;
+  setConfig("customBackgroundFilter", arr);
 });
 
-ConfigEvent.subscribe((eventKey, eventValue) => {
-  if (eventKey === "customBackgroundFilter" && eventValue) {
-    loadConfig(eventValue as MonkeyTypes.CustomBackgroundFilter);
+configEvent.subscribe(({ key, newValue }) => {
+  if (key === "customBackgroundFilter") {
+    loadConfig(newValue);
     apply();
   }
 });

@@ -1,46 +1,54 @@
+import { QuoteRating } from "@monkeytype/schemas/quotes";
 import * as db from "../init/db";
+import { Collection } from "mongodb";
+import { WithObjectId } from "../utils/misc";
+import { Language } from "@monkeytype/schemas/languages";
+
+type DBQuoteRating = WithObjectId<QuoteRating>;
+
+// Export for use in tests
+export const getQuoteRatingCollection = (): Collection<DBQuoteRating> =>
+  db.collection<DBQuoteRating>("quote-rating");
 
 export async function submit(
   quoteId: number,
-  language: string,
+  language: Language,
   rating: number,
-  update: boolean
+  update: boolean,
 ): Promise<void> {
   if (update) {
-    await db
-      .collection<MonkeyTypes.QuoteRating>("quote-rating")
-      .updateOne(
-        { quoteId, language },
-        { $inc: { totalRating: rating } },
-        { upsert: true }
-      );
+    await getQuoteRatingCollection().updateOne(
+      { quoteId, language },
+      { $inc: { totalRating: rating } },
+      { upsert: true },
+    );
   } else {
-    await db
-      .collection<MonkeyTypes.QuoteRating>("quote-rating")
-      .updateOne(
-        { quoteId, language },
-        { $inc: { ratings: 1, totalRating: rating } },
-        { upsert: true }
-      );
+    await getQuoteRatingCollection().updateOne(
+      { quoteId, language },
+      { $inc: { ratings: 1, totalRating: rating } },
+      { upsert: true },
+    );
   }
 
   const quoteRating = await get(quoteId, language);
+  if (quoteRating === null) {
+    throw new Error("Quote rating is null after adding rating?");
+  }
   const average = parseFloat(
     (
-      Math.round((quoteRating!.totalRating / quoteRating!.ratings) * 10) / 10
-    ).toFixed(1)
+      Math.round((quoteRating.totalRating / quoteRating.ratings) * 10) / 10
+    ).toFixed(1),
   );
 
-  await db
-    .collection<MonkeyTypes.QuoteRating>("quote-rating")
-    .updateOne({ quoteId, language }, { $set: { average } });
+  await getQuoteRatingCollection().updateOne(
+    { quoteId, language },
+    { $set: { average } },
+  );
 }
 
 export async function get(
   quoteId: number,
-  language: string
-): Promise<MonkeyTypes.QuoteRating | null> {
-  return await db
-    .collection<MonkeyTypes.QuoteRating>("quote-rating")
-    .findOne({ quoteId, language });
+  language: Language,
+): Promise<DBQuoteRating | null> {
+  return await getQuoteRatingCollection().findOne({ quoteId, language });
 }

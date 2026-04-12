@@ -1,7 +1,10 @@
-import * as TestWords from "./test-words";
-import { mean, roundTo2 } from "../utils/misc";
+import { lastElementFromArray } from "../utils/arrays";
+import { mean, roundTo2 } from "@monkeytype/util/numbers";
+import * as TestState from "./test-state";
+import { Config } from "../config/store";
+import { getInputElementValue } from "../input/input-element";
 
-const keysToTrack = [
+const keysToTrack = new Set([
   "NumpadMultiply",
   "NumpadSubtract",
   "NumpadAdd",
@@ -70,9 +73,9 @@ const keysToTrack = [
   "Enter",
   "Tab",
   "NoCode", //android (smells) and some keyboards might send no location data - need to use this as a fallback
-];
+]);
 
-interface KeypressTimings {
+type KeypressTimings = {
   spacing: {
     first: number;
     last: number;
@@ -81,63 +84,39 @@ interface KeypressTimings {
   duration: {
     array: number[];
   };
-}
+};
 
-interface Keydata {
+type Keydata = {
   timestamp: number;
   index: number;
-}
+};
 
-interface ErrorHistoryObject {
+type ErrorHistoryObject = {
   count: number;
   words: number[];
-}
+};
 
 class Input {
   current: string;
-  history: string[];
-  historyLength: number;
+  private history: string[];
   koreanStatus: boolean;
-  length: number;
   constructor() {
     this.current = "";
     this.history = [];
-    this.historyLength = 0;
-    this.length = 0;
     this.koreanStatus = false;
   }
 
   reset(): void {
     this.current = "";
     this.history = [];
-    this.length = 0;
   }
 
   resetHistory(): void {
     this.history = [];
-    this.length = 0;
-  }
-
-  setCurrent(val: string): void {
-    this.current = val;
-    this.length = this.current.length;
   }
 
   setKoreanStatus(val: boolean): void {
     this.koreanStatus = val;
-  }
-
-  appendCurrent(val: string): void {
-    this.current += val;
-    this.length = this.current.length;
-  }
-
-  resetCurrent(): void {
-    this.current = "";
-  }
-
-  getCurrent(): string {
-    return this.current;
   }
 
   getKoreanStatus(): boolean {
@@ -146,14 +125,16 @@ class Input {
 
   pushHistory(): void {
     this.history.push(this.current);
-    this.historyLength = this.history.length;
-    this.resetCurrent();
+    this.current = "";
   }
 
   popHistory(): string {
     const ret = this.history.pop() ?? "";
-    this.historyLength = this.history.length;
     return ret;
+  }
+
+  get(index: number): string | undefined {
+    return this.history[index];
   }
 
   getHistory(): string[];
@@ -167,36 +148,44 @@ class Input {
   }
 
   getHistoryLast(): string | undefined {
-    return this.history[this.history.length - 1];
+    return lastElementFromArray(this.history);
+  }
+
+  syncWithInputElement(): void {
+    this.current = getInputElementValue().inputValue;
   }
 }
 
 class Corrected {
   current: string;
-  history: string[];
+  private history: string[];
   constructor() {
     this.current = "";
     this.history = [];
   }
-  setCurrent(val: string): void {
-    this.current = val;
-  }
 
-  appendCurrent(val: string): void {
-    this.current += val;
-  }
-
-  resetCurrent(): void {
+  reset(): void {
+    this.history = [];
     this.current = "";
   }
 
-  resetHistory(): void {
-    this.history = [];
-  }
+  update(char: string, correct: boolean): void {
+    if (this.current === "") {
+      this.current += input.current;
+    } else {
+      const currCorrectedTestInputLength = this.current.length;
 
-  reset(): void {
-    this.resetCurrent();
-    this.resetHistory();
+      const charIndex = input.current.length - 1;
+
+      if (charIndex >= currCorrectedTestInputLength) {
+        this.current += char;
+      } else if (!correct) {
+        this.current =
+          this.current.substring(0, charIndex) +
+          char +
+          this.current.substring(charIndex + 1);
+      }
+    }
   }
 
   getHistory(i: number): string | undefined {
@@ -204,7 +193,9 @@ class Corrected {
   }
 
   popHistory(): string {
-    return this.history.pop() ?? "";
+    const popped = this.history.pop() ?? "";
+    this.current = popped;
+    return popped;
   }
 
   pushHistory(): void {
@@ -221,9 +212,11 @@ export const corrected = new Corrected();
 export let keypressCountHistory: number[] = [];
 let currentKeypressCount = 0;
 export let currentBurstStart = 0;
-export let missedWords: {
-  [word: string]: number;
-} = {};
+type MissedWordsType = Record<string, number>;
+// We're using Object.create(null) to make sure that __proto__ won't have any special meaning when it's used to index the missedWords object (so if a user mistypes the word __proto__ it will appear in the practise words test)
+export let missedWords: MissedWordsType = Object.create(
+  null,
+) as MissedWordsType;
 export let accuracy = {
   correct: 0,
   incorrect: 0,
@@ -304,23 +297,77 @@ export function forceKeyup(now: number): void {
   //using mean here because for words mode, the last keypress ends the test.
   //if we then force keyup on that last keypress, it will record a duration of 0
   //skewing the average and standard deviation
-  const avg = roundTo2(mean(keypressTimings.duration.array));
-  const keysOrder = Object.entries(keyDownData);
-  keysOrder.sort((a, b) => a[1].timestamp - b[1].timestamp);
-  for (const keyOrder of keysOrder) {
-    recordKeyupTime(now, keyOrder[0]);
+
+  const indexesToRemove = new Set(
+    Object.values(keyDownData).map((data) => data.index),
+  );
+
+  const keypressDurations = keypressTimings.duration.array.filter(
+    (_, index) => !indexesToRemove.has(index),
+  );
+  if (keypressDurations.length === 0) {
+    // this means the test ended while all keys were still held - probably safe to ignore
+    // since this will result in a "too short" test anyway
+    return;
   }
-  const last = keysOrder[keysOrder.length - 1]?.[0] as string;
-  const index = keyDownData[last]?.index;
-  if (last !== undefined && index !== undefined) {
+
+  const avg = roundTo2(mean(keypressDurations));
+
+  const orderedKeys = Object.entries(keyDownData).sort(
+    (a, b) => a[1].timestamp - b[1].timestamp,
+  );
+
+  for (const [key, { index }] of orderedKeys) {
     keypressTimings.duration.array[index] = avg;
+
+    if (key === "NoCode") {
+      noCodeIndex--;
+    }
+
+    // oxlint-disable-next-line no-dynamic-delete
+    delete keyDownData[key];
+
+    updateOverlap(now);
   }
 }
 
-let noCodeIndex = 0;
+function getEventCode(event: KeyboardEvent): string {
+  if (event.code === "NumpadEnter" && Config.funbox.includes("58008")) {
+    return "Space";
+  }
 
-export function recordKeyupTime(now: number, key: string): void {
-  if (!keysToTrack.includes(key)) return;
+  if (event.code.includes("Arrow") && Config.funbox.includes("arrows")) {
+    return "NoCode";
+  }
+
+  if (
+    event.code === "" ||
+    event.code === undefined ||
+    event.key === "Unidentified"
+  ) {
+    return "NoCode";
+  }
+
+  return event.code;
+}
+
+let noCodeIndex = 0;
+export function recordKeyupTime(now: number, event: KeyboardEvent): void {
+  if (event.repeat) {
+    console.log(
+      "Keyup not recorded - repeat",
+      event.key,
+      event.code,
+      //ignore for logging
+      // oxlint-disable-next-line no-deprecated
+      event.which,
+    );
+    return;
+  }
+
+  let key = getEventCode(event);
+
+  if (!keysToTrack.has(key)) return;
 
   if (key === "NoCode") {
     noCodeIndex--;
@@ -335,25 +382,40 @@ export function recordKeyupTime(now: number, key: string): void {
   keypressTimings.duration.array[keyDownDataForKey.index] = diff;
 
   console.debug("Keyup recorded", key, diff);
+  // oxlint-disable-next-line no-dynamic-delete
   delete keyDownData[key];
 
   updateOverlap(now);
 }
 
-export function recordKeydownTime(now: number, key: string): void {
-  if (!keysToTrack.includes(key)) {
-    console.debug("Key not tracked", key);
+export function recordKeydownTime(now: number, event: KeyboardEvent): void {
+  if (event.repeat) {
+    console.log(
+      "Keydown not recorded - repeat",
+      event.key,
+      event.code,
+      //ignore for logging
+      // oxlint-disable-next-line no-deprecated
+      event.which,
+    );
+    return;
+  }
+
+  let key = getEventCode(event);
+
+  if (!keysToTrack.has(key)) {
+    console.debug("Keydown not recorded - not tracked", key);
+    return;
+  }
+
+  if (keyDownData[key] !== undefined) {
+    console.debug("Key already down", key);
     return;
   }
 
   if (key === "NoCode") {
     key = "NoCode" + noCodeIndex;
     noCodeIndex++;
-  }
-
-  if (keyDownData[key] !== undefined) {
-    console.debug("Key already down", key);
-    return;
   }
 
   keyDownData[key] = {
@@ -390,7 +452,42 @@ function updateOverlap(now: number): void {
   }
 }
 
-export function resetKeypressTimings(): void {
+export function carryoverFirstKeypress(): void {
+  // Because keydown triggers before input, we need to grab the first keypress data here and carry it over
+
+  // Take the key with the largest index
+  const lastKey = Object.keys(keyDownData).reduce((a, b) => {
+    const aIndex = keyDownData[a]?.index;
+    const bIndex = keyDownData[b]?.index;
+    if (aIndex === undefined) return b;
+    if (bIndex === undefined) return a;
+    return aIndex > bIndex ? a : b;
+  }, "");
+
+  // Get the data
+  const lastKeyData = keyDownData[lastKey];
+
+  // Carry over
+  if (lastKeyData !== undefined) {
+    keypressTimings = {
+      spacing: {
+        first: lastKeyData.timestamp,
+        last: lastKeyData.timestamp,
+        array: [],
+      },
+      duration: {
+        array: [0],
+      },
+    };
+    keyDownData[lastKey] = {
+      timestamp: lastKeyData.timestamp,
+      // Make sure to set it to the first index
+      index: 0,
+    };
+  }
+}
+
+function resetKeypressTimings(): void {
   keypressTimings = {
     spacing: {
       first: -1,
@@ -407,6 +504,7 @@ export function resetKeypressTimings(): void {
   };
   keyDownData = {};
   noCodeIndex = 0;
+
   console.debug("Keypress timings reset");
 }
 
@@ -414,7 +512,7 @@ export function pushMissedWord(word: string): void {
   if (!Object.keys(missedWords).includes(word)) {
     missedWords[word] = 1;
   } else {
-    missedWords[word]++;
+    (missedWords[word] as number) += 1;
   }
 }
 
@@ -427,11 +525,11 @@ export function pushToRawHistory(raw: number): void {
 }
 
 export function pushBurstToHistory(speed: number): void {
-  if (burstHistory[TestWords.words.currentIndex] === undefined) {
+  if (burstHistory[TestState.activeWordIndex] === undefined) {
     burstHistory.push(speed);
   } else {
     //repeated word - override
-    burstHistory[TestWords.words.currentIndex] = speed;
+    burstHistory[TestState.activeWordIndex] = speed;
   }
 }
 
@@ -449,19 +547,11 @@ export function restart(): void {
     words: [],
   };
   currentBurstStart = 0;
-  missedWords = {};
+  missedWords = Object.create(null) as MissedWordsType;
   accuracy = {
     correct: 0,
     incorrect: 0,
   };
-  keypressTimings = {
-    spacing: {
-      first: -1,
-      last: -1,
-      array: [],
-    },
-    duration: {
-      array: [],
-    },
-  };
+
+  resetKeypressTimings();
 }

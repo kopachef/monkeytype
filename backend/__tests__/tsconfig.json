@@ -1,22 +1,12 @@
 {
+  "extends": "@monkeytype/typescript-config/base.json",
   "compilerOptions": {
-    "incremental": true,
-    "module": "commonjs",
-    "target": "es6",
-    "sourceMap": false,
-    "allowJs": true,
-    "checkJs": true,
-    "outDir": "build",
-    "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "strictNullChecks": true,
-    "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "noImplicitAny": false,
+    "strictFunctionTypes": false,
+    "useUnknownInCatchVariables": false,
+    "strictPropertyInitialization": false
   },
-  "ts-node": {
-    "files": true
-  },
-  "include": ["./**/*.spec.ts", "./setup-tests.ts"]
+  "files": ["vitest.d.ts"],
+  "include": ["./**/*.ts", "./**/*.spec.ts", "./setup-tests.ts"]
 }

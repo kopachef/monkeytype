@@ -1,235 +1,256 @@
-import Config from "../config";
+import { Config } from "../config/store";
 import * as CustomText from "./custom-text";
-import * as Misc from "../utils/misc";
+import * as DateTime from "../utils/date-and-time";
 import * as TestWords from "./test-words";
 import * as TestInput from "./test-input";
-import * as Time from "../states/time";
-import * as SlowTimer from "../states/slow-timer";
+import * as Time from "../legacy-states/time";
 import * as TestState from "./test-state";
-import * as ConfigEvent from "../observables/config-event";
+import { configEvent } from "../events/config";
+import { applyReducedMotion } from "../utils/misc";
+import { requestDebouncedAnimationFrame } from "../utils/debounced-animation-frame";
+import { animate } from "animejs";
+
+const barEl = document.querySelector("#barTimerProgress .bar") as HTMLElement;
+const barOpacityEl = document.querySelector(
+  "#barTimerProgress .opacityWrapper",
+) as HTMLElement;
+const textEl = document.querySelector(
+  "#liveStatsTextTop .timerProgress",
+) as HTMLElement;
+const miniEl = document.querySelector("#liveStatsMini .time") as HTMLElement;
+
+function showElement(el: HTMLElement): void {
+  animate(el, {
+    opacity: [0, 1],
+    duration: applyReducedMotion(125),
+    onBegin: () => {
+      el.classList.remove("hidden");
+    },
+  });
+}
 
 export function show(): void {
-  const op = Config.showTimerProgress ? parseFloat(Config.timerOpacity) : 0;
-  if (Config.mode !== "zen" && Config.timerStyle === "bar") {
-    $("#timerWrapper").stop(true, true).removeClass("hidden").animate(
-      {
-        opacity: op,
-      },
-      125
-    );
-  } else if (Config.timerStyle === "text") {
-    $("#timerNumber")
-      .stop(true, true)
-      .removeClass("hidden")
-      .css("opacity", 0)
-      .animate(
-        {
-          opacity: op,
-        },
-        125
-      );
-  } else if (Config.mode === "zen" || Config.timerStyle === "mini") {
-    if (op > 0) {
-      $("#miniTimerAndLiveWpm .time")
-        .stop(true, true)
-        .removeClass("hidden")
-        .animate(
-          {
-            opacity: op,
-          },
-          125
-        );
+  if (!TestState.isActive) return;
+  requestDebouncedAnimationFrame("timer-progress.show", () => {
+    if (Config.mode !== "zen" && Config.timerStyle === "bar") {
+      showElement(barOpacityEl);
+    } else if (
+      Config.timerStyle === "text" ||
+      Config.timerStyle === "flash_text"
+    ) {
+      showElement(textEl);
+    } else if (
+      Config.timerStyle === "mini" ||
+      Config.timerStyle === "flash_mini"
+    ) {
+      showElement(miniEl);
     }
-  }
+  });
+}
+
+export function reset(): void {
+  requestDebouncedAnimationFrame("timer-progress.reset", () => {
+    let width = "0vw";
+    if (
+      Config.mode === "time" ||
+      (Config.mode === "custom" && CustomText.getLimitMode() === "time")
+    ) {
+      width = "100vw";
+    }
+
+    animate(barEl, {
+      width,
+      duration: 0,
+    });
+    miniEl.textContent = "0";
+    textEl.textContent = "0";
+  });
+}
+
+function hideElement(el: HTMLElement, hideOnComplete: boolean): void {
+  const args = {
+    opacity: 0,
+    duration: applyReducedMotion(125),
+  };
+
+  animate(
+    el,
+    hideOnComplete
+      ? {
+          ...args,
+          onComplete: () => {
+            el.classList.add("hidden");
+          },
+        }
+      : args,
+  );
 }
 
 export function hide(): void {
-  $("#timerWrapper").stop(true, true).animate(
-    {
-      opacity: 0,
-    },
-    125
-  );
-  $("#miniTimerAndLiveWpm .time")
-    .stop(true, true)
-    .animate(
-      {
-        opacity: 0,
-      },
-      125,
-      () => {
-        $("#miniTimerAndLiveWpm .time").addClass("hidden");
-      }
-    );
-  $("#timerNumber").stop(true, true).animate(
-    {
-      opacity: 0,
-    },
-    125
-  );
+  requestDebouncedAnimationFrame("timer-progress.hide", () => {
+    hideElement(barOpacityEl, false);
+    hideElement(miniEl, true);
+    hideElement(textEl, true);
+  });
 }
 
-export function restart(): void {
-  if (Config.timerStyle === "bar") {
-    if (Config.mode === "time") {
-      $("#timer").stop(true, true).animate(
-        {
-          width: "100vw",
-        },
-        0
-      );
-    } else if (Config.mode === "words" || Config.mode === "custom") {
-      $("#timer").stop(true, true).animate(
-        {
-          width: "0vw",
-        },
-        0
-      );
-    }
+export function instantHide(): void {
+  barOpacityEl.style.opacity = "0";
+
+  miniEl.classList.add("hidden");
+  miniEl.style.opacity = "0";
+
+  textEl.classList.add("hidden");
+  textEl.style.opacity = "0";
+}
+
+function getCurrentCount(): number {
+  if (Config.mode === "custom" && CustomText.getLimitMode() === "section") {
+    return (
+      (TestWords.words.sectionIndexList[TestState.activeWordIndex] as number) -
+      1
+    );
+  } else {
+    return TestInput.input.getHistory().length;
   }
 }
 
-const timerNumberElement = document.querySelector("#timerNumber");
-const miniTimerNumberElement = document.querySelector(
-  "#miniTimerAndLiveWpm .time"
-);
+function setTimerHtmlToInputLength(el: HTMLElement, wrapInDiv: boolean): void {
+  let historyLength = `${TestInput.input.getHistory().length}`;
 
-function getCurrentCount(): number {
-  if (Config.mode === "custom" && CustomText.isSectionRandom) {
-    return (
-      (TestWords.words.sectionIndexList[
-        TestWords.words.currentIndex
-      ] as number) - 1
-    );
+  if (wrapInDiv) {
+    historyLength = `<div>${historyLength}</div>`;
+  }
+
+  el.innerHTML = historyLength;
+}
+
+function updateTimer(el: HTMLElement, outof: number, wrapInDiv: boolean): void {
+  if (outof === 0) {
+    setTimerHtmlToInputLength(el, wrapInDiv);
   } else {
-    return TestInput.input.history.length;
+    el.innerHTML = `${getCurrentCount()}/${outof}`;
   }
 }
 
 export function update(): void {
-  const time = Time.get();
-  if (
-    Config.mode === "time" ||
-    (Config.mode === "custom" && CustomText.isTimeRandom)
-  ) {
-    let maxtime = Config.time;
-    if (Config.mode === "custom" && CustomText.isTimeRandom) {
-      maxtime = CustomText.time;
-    }
-    if (Config.timerStyle === "bar") {
-      const percent = 100 - ((time + 1) / maxtime) * 100;
-      $("#timer")
-        .stop(true, true)
-        .animate(
-          {
-            width: percent + "vw",
-          },
-          SlowTimer.get() ? 0 : 1000,
-          "linear"
+  requestDebouncedAnimationFrame("timer-progress.update", () => {
+    const time = Time.get();
+    if (
+      Config.mode === "time" ||
+      (Config.mode === "custom" && CustomText.getLimitMode() === "time")
+    ) {
+      let maxtime = Config.time;
+      if (Config.mode === "custom" && CustomText.getLimitMode() === "time") {
+        maxtime = CustomText.getLimitValue();
+      }
+      if (Config.timerStyle === "bar") {
+        const percent = 100 - ((time + 1) / maxtime) * 100;
+
+        animate(barEl, {
+          width: percent + "vw",
+          duration: 1000,
+          ease: "linear",
+        });
+      } else if (Config.timerStyle === "text") {
+        let displayTime = DateTime.secondsToString(maxtime - time);
+        if (maxtime === 0) {
+          displayTime = DateTime.secondsToString(time);
+        }
+        if (textEl !== null) {
+          textEl.innerHTML = "<div>" + displayTime + "</div>";
+        }
+      } else if (Config.timerStyle === "flash_mini") {
+        let displayTime = DateTime.secondsToString(maxtime - time);
+        if (maxtime === 0) {
+          displayTime = DateTime.secondsToString(time);
+        }
+        if (miniEl !== null) {
+          if ((maxtime - time) % 15 !== 0) {
+            miniEl.style.opacity = "0";
+          } else {
+            miniEl.style.opacity = "1";
+          }
+          miniEl.innerHTML = "<div>" + displayTime + "</div>";
+        }
+      } else if (Config.timerStyle === "flash_text") {
+        let displayTime = DateTime.secondsToString(maxtime - time);
+        if (maxtime === 0) {
+          displayTime = DateTime.secondsToString(time);
+        }
+        if (textEl !== null) {
+          textEl.innerHTML =
+            "<div>" +
+            `${(maxtime - time) % 15 !== 0 ? "" : displayTime}` +
+            "</div>";
+        }
+      } else if (Config.timerStyle === "mini") {
+        let displayTime = DateTime.secondsToString(maxtime - time);
+        if (maxtime === 0) {
+          displayTime = DateTime.secondsToString(time);
+        }
+        if (miniEl !== null) {
+          miniEl.innerHTML = displayTime;
+        }
+      }
+    } else if (
+      Config.mode === "words" ||
+      Config.mode === "custom" ||
+      Config.mode === "quote"
+    ) {
+      let outof = TestWords.words.length;
+      if (Config.mode === "words") {
+        outof = Config.words;
+      }
+      if (Config.mode === "custom") {
+        outof = CustomText.getLimitValue();
+      }
+      if (Config.mode === "quote") {
+        outof = TestWords.currentQuote?.textSplit.length ?? 1;
+      }
+      if (Config.timerStyle === "bar") {
+        const percent = Math.floor(
+          ((TestState.activeWordIndex + 1) / outof) * 100,
         );
-    } else if (Config.timerStyle === "text") {
-      let displayTime = Misc.secondsToString(maxtime - time);
-      if (maxtime === 0) {
-        displayTime = Misc.secondsToString(time);
+
+        animate(barEl, {
+          width: percent + "vw",
+          duration: 250,
+        });
+      } else if (
+        Config.timerStyle === "text" ||
+        Config.timerStyle === "flash_text"
+      ) {
+        updateTimer(textEl, outof, true);
+      } else if (
+        Config.timerStyle === "mini" ||
+        Config.timerStyle === "flash_mini"
+      ) {
+        updateTimer(miniEl, outof, false);
       }
-      if (timerNumberElement !== null) {
-        timerNumberElement.innerHTML = "<div>" + displayTime + "</div>";
-      }
-    } else if (Config.timerStyle === "mini") {
-      let displayTime = Misc.secondsToString(maxtime - time);
-      if (maxtime === 0) {
-        displayTime = Misc.secondsToString(time);
-      }
-      if (miniTimerNumberElement !== null) {
-        miniTimerNumberElement.innerHTML = displayTime;
-      }
-    }
-  } else if (
-    Config.mode === "words" ||
-    Config.mode === "custom" ||
-    Config.mode === "quote"
-  ) {
-    let outof = TestWords.words.length;
-    if (Config.mode === "words") {
-      outof = Config.words;
-    }
-    if (Config.mode === "custom") {
-      if (CustomText.isWordRandom) {
-        outof = CustomText.word;
-      } else if (CustomText.isSectionRandom) {
-        outof = CustomText.section;
-      } else {
-        outof = CustomText.text.length;
+    } else if (Config.mode === "zen") {
+      if (Config.timerStyle === "text" || Config.timerStyle === "flash_text") {
+        setTimerHtmlToInputLength(textEl, true);
+      } else if (
+        Config.timerStyle === "mini" ||
+        Config.timerStyle === "flash_mini"
+      ) {
+        setTimerHtmlToInputLength(miniEl, false);
       }
     }
-    if (Config.mode === "quote") {
-      outof = TestWords.randomQuote?.textSplit?.length ?? 1;
-    }
-    if (Config.timerStyle === "bar") {
-      const percent = Math.floor(
-        ((TestWords.words.currentIndex + 1) / outof) * 100
-      );
-      $("#timer")
-        .stop(true, true)
-        .animate(
-          {
-            width: percent + "vw",
-          },
-          SlowTimer.get() ? 0 : 250
-        );
-    } else if (Config.timerStyle === "text") {
-      if (outof === 0) {
-        if (timerNumberElement !== null) {
-          timerNumberElement.innerHTML =
-            "<div>" + `${TestInput.input.history.length}` + "</div>";
-        }
-      } else {
-        if (timerNumberElement !== null) {
-          timerNumberElement.innerHTML =
-            "<div>" + `${getCurrentCount()}/${outof}` + "</div>";
-        }
-      }
-    } else if (Config.timerStyle === "mini") {
-      if (outof === 0) {
-        if (miniTimerNumberElement !== null) {
-          miniTimerNumberElement.innerHTML = `${TestInput.input.history.length}`;
-        }
-      } else {
-        if (miniTimerNumberElement !== null) {
-          miniTimerNumberElement.innerHTML = `${getCurrentCount()}/${outof}`;
-        }
-      }
-    }
-  } else if (Config.mode === "zen") {
-    if (Config.timerStyle === "text") {
-      if (timerNumberElement !== null) {
-        timerNumberElement.innerHTML =
-          "<div>" + `${TestInput.input.history.length}` + "</div>";
-      }
-    } else {
-      if (miniTimerNumberElement !== null) {
-        miniTimerNumberElement.innerHTML = `${TestInput.input.history.length}`;
-      }
-    }
-  }
+  });
 }
 
 export function updateStyle(): void {
   if (!TestState.isActive) return;
   hide();
   update();
+  if (Config.timerStyle === "off") return;
   setTimeout(() => {
     show();
   }, 125);
 }
 
-ConfigEvent.subscribe((eventKey, eventValue) => {
-  if (eventKey === "showTimerProgress") {
-    if (eventValue === true && TestState.isActive) {
-      show();
-    } else {
-      hide();
-    }
-  }
-  if (eventKey === "timerStyle") updateStyle();
+configEvent.subscribe(({ key }) => {
+  if (key === "timerStyle") updateStyle();
 });

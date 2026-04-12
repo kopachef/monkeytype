@@ -1,43 +1,26 @@
 import * as TestLogic from "../../test/test-logic";
 import * as TestUI from "../../test/test-ui";
+import * as PractiseWordsModal from "../../modals/practise-words";
+import {
+  showErrorNotification,
+  showSuccessNotification,
+} from "../../states/notifications";
+import * as TestInput from "../../test/test-input";
+import * as TestState from "../../test/test-state";
+import * as TestWords from "../../test/test-words";
+import { Config } from "../../config/store";
 import * as PractiseWords from "../../test/practise-words";
-import * as Misc from "../../utils/misc";
-import * as Notifications from "../../elements/notifications";
+import { Command, CommandsSubgroup } from "../types";
+import * as TestScreenshot from "../../test/test-screenshot";
 
-const copyWords: MonkeyTypes.CommandsSubgroup = {
-  title: "Are you sure...",
-  list: [
-    {
-      id: "copyNo",
-      display: "Nevermind",
-    },
-    {
-      id: "copyYes",
-      display: "Yes, I am sure",
-      exec: (): void => {
-        const words = Misc.getWords();
-
-        navigator.clipboard.writeText(words).then(
-          () => {
-            Notifications.add("Copied to clipboard", 1);
-          },
-          () => {
-            Notifications.add("Failed to copy!", -1);
-          }
-        );
-      },
-    },
-  ],
-};
-
-const practiceSubgroup: MonkeyTypes.CommandsSubgroup = {
+const practiceSubgroup: CommandsSubgroup = {
   title: "Practice words...",
   list: [
     {
       id: "practiseWordsMissed",
       display: "missed",
       exec: (): void => {
-        PractiseWords.init(true, false);
+        PractiseWords.init("words", false);
         TestLogic.restart({
           practiseMissed: true,
         });
@@ -47,7 +30,7 @@ const practiceSubgroup: MonkeyTypes.CommandsSubgroup = {
       id: "practiseWordsSlow",
       display: "slow",
       exec: (): void => {
-        PractiseWords.init(false, true);
+        PractiseWords.init("off", true);
         TestLogic.restart({
           practiseMissed: true,
         });
@@ -57,23 +40,34 @@ const practiceSubgroup: MonkeyTypes.CommandsSubgroup = {
       id: "practiseWordsBoth",
       display: "both",
       exec: (): void => {
-        PractiseWords.init(true, true);
+        PractiseWords.init("words", true);
         TestLogic.restart({
           practiseMissed: true,
+        });
+      },
+    },
+    {
+      id: "practiseWordsCustom",
+      display: "custom...",
+      opensModal: true,
+      exec: (options): void => {
+        PractiseWordsModal.show({
+          animationMode: "modalOnly",
+          modalChain: options.commandlineModal,
         });
       },
     },
   ],
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "nextTest",
     display: "Next test",
     alias: "restart start begin type test typing",
     icon: "fa-chevron-right",
     available: (): boolean => {
-      return TestUI.resultVisible;
+      return TestState.resultVisible;
     },
     exec: (): void => {
       TestLogic.restart();
@@ -89,7 +83,7 @@ const commands: MonkeyTypes.Command[] = [
       });
     },
     available: (): boolean => {
-      return TestUI.resultVisible;
+      return TestState.resultVisible;
     },
   },
   {
@@ -98,7 +92,7 @@ const commands: MonkeyTypes.Command[] = [
     icon: "fa-exclamation-triangle",
     subgroup: practiceSubgroup,
     available: (): boolean => {
-      return TestUI.resultVisible;
+      return TestState.resultVisible;
     },
   },
   {
@@ -106,33 +100,62 @@ const commands: MonkeyTypes.Command[] = [
     display: "Toggle word history",
     icon: "fa-align-left",
     exec: (): void => {
-      TestUI.toggleResultWords();
+      void TestUI.toggleResultWords();
     },
     available: (): boolean => {
-      return TestUI.resultVisible;
+      return TestState.resultVisible;
     },
   },
   {
-    id: "saveScreenshot",
+    id: "copyScreenshot",
     display: "Copy screenshot to clipboard",
-    icon: "fa-image",
-    alias: "save",
+    icon: "fa-copy",
+    alias: "copy image clipboard",
     exec: (): void => {
       setTimeout(() => {
-        TestUI.screenshot();
+        void TestScreenshot.copyToClipboard();
       }, 500);
     },
     available: (): boolean => {
-      return TestUI.resultVisible;
+      return TestState.resultVisible;
+    },
+  },
+  {
+    id: "downloadScreenshot",
+    display: "Download screenshot",
+    icon: "fa-download",
+    alias: "save image download file",
+    exec: (): void => {
+      setTimeout(async () => {
+        void TestScreenshot.download();
+      }, 500);
+    },
+    available: (): boolean => {
+      return TestState.resultVisible;
     },
   },
   {
     id: "copyWordsToClipboard",
     display: "Copy words to clipboard",
     icon: "fa-copy",
-    subgroup: copyWords,
+    exec: (): void => {
+      const words = (
+        Config.mode === "zen"
+          ? TestInput.input.getHistory()
+          : TestWords.words.list.slice(0, TestInput.input.getHistory().length)
+      ).join(" ");
+
+      navigator.clipboard.writeText(words).then(
+        () => {
+          showSuccessNotification("Copied to clipboard");
+        },
+        () => {
+          showErrorNotification("Failed to copy!");
+        },
+      );
+    },
     available: (): boolean => {
-      return TestUI.resultVisible;
+      return TestState.resultVisible;
     },
   },
 ];

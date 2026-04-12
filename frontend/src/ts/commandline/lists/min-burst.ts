@@ -1,8 +1,10 @@
-import Config, * as UpdateConfig from "../../config";
+import { Config } from "../../config/store";
+import { setConfig } from "../../config/setters";
 import { get as getTypingSpeedUnit } from "../../utils/typing-speed-units";
+import { Command, CommandsSubgroup } from "../types";
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
-  title: "Change min burst mode...",
+const subgroup: CommandsSubgroup = {
+  title: "Minimum word burst...",
   configKey: "minBurst",
   list: [
     {
@@ -10,7 +12,7 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
       display: "off",
       configValue: "off",
       exec: (): void => {
-        UpdateConfig.setMinBurst("off");
+        setConfig("minBurst", "off");
       },
     },
     {
@@ -18,13 +20,13 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
       display: "fixed...",
       configValue: "fixed",
       input: true,
-      exec: (input): void => {
-        if (!input) return;
-        UpdateConfig.setMinBurst("fixed");
+      exec: ({ input }): void => {
+        if (input === undefined || input === "") return;
+        setConfig("minBurst", "fixed");
         const newVal = getTypingSpeedUnit(Config.typingSpeedUnit).toWpm(
-          parseInt(input)
+          parseInt(input),
         );
-        UpdateConfig.setMinBurstCustomSpeed(newVal);
+        setConfig("minBurstCustomSpeed", newVal);
       },
     },
     {
@@ -32,22 +34,22 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
       display: "flex...",
       configValue: "flex",
       input: true,
-      exec: (input): void => {
-        if (!input) return;
-        UpdateConfig.setMinBurst("flex");
+      exec: ({ input }): void => {
+        if (input === undefined || input === "") return;
+        setConfig("minBurst", "flex");
         const newVal = getTypingSpeedUnit(Config.typingSpeedUnit).toWpm(
-          parseInt(input)
+          parseInt(input),
         );
-        UpdateConfig.setMinBurstCustomSpeed(newVal);
+        setConfig("minBurstCustomSpeed", newVal);
       },
     },
   ],
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changeMinBurst",
-    display: "Minimum burst...",
+    display: "Minimum word burst...",
     alias: "minimum",
     icon: "fa-bomb",
     subgroup,

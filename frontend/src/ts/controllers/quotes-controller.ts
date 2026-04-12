@@ -1,27 +1,28 @@
-import { randomElementFromArray, shuffle } from "../utils/misc";
-import { subscribe } from "../observables/config-event";
+import { removeLanguageSize } from "../utils/strings";
+import { randomElementFromArray, shuffle } from "../utils/arrays";
+import { cachedFetchJson } from "../utils/json-data";
+import { configEvent } from "../events/config";
 import * as DB from "../db";
+import Ape from "../ape";
+import { tryCatch } from "@monkeytype/util/trycatch";
+import { Language } from "@monkeytype/schemas/languages";
+import { QuoteData, QuoteDataQuote } from "@monkeytype/schemas/quotes";
+import { RequiredProperties } from "../utils/misc";
 
-interface JsonQuote {
-  text: string;
-  britishText?: string;
-  source: string;
-  length: number;
-  id: number;
-}
+export type Quote = QuoteDataQuote & {
+  group: number;
+  language: Language;
+  textSplit?: string[];
+};
 
-interface QuoteData {
-  language: string;
-  quotes: JsonQuote[];
-  groups: [number, number][];
-}
+export type QuoteWithTextSplit = RequiredProperties<Quote, "textSplit">;
 
-interface QuoteCollection {
-  quotes: MonkeyTypes.Quote[];
+type QuoteCollection = {
+  quotes: Quote[];
   length: number;
   language: string | null;
-  groups: MonkeyTypes.Quote[][];
-}
+  groups: Quote[][];
+};
 
 const defaultQuoteCollection: QuoteCollection = {
   quotes: [],
@@ -30,85 +31,86 @@ const defaultQuoteCollection: QuoteCollection = {
   groups: [],
 };
 
-function normalizeLanguage(language: string): string {
-  return language.replace(/_\d*k$/g, "");
-}
-
 class QuotesController {
   private quoteCollection: QuoteCollection = defaultQuoteCollection;
 
-  private quoteQueue: MonkeyTypes.Quote[] = [];
+  private quoteQueue: Quote[] = [];
   private queueIndex = 0;
 
   async getQuotes(
-    language: string,
-    quoteLengths?: number[]
+    language: Language,
+    quoteLengths?: number[],
   ): Promise<QuoteCollection> {
-    const normalizedLanguage = normalizeLanguage(language);
+    const normalizedLanguage = removeLanguageSize(language);
 
     if (this.quoteCollection.language !== normalizedLanguage) {
-      try {
-        const data: QuoteData = await $.getJSON(
-          `quotes/${normalizedLanguage}.json`
-        );
-
-        if (data.quotes === undefined || data.quotes.length === 0) {
+      const { data, error } = await tryCatch(
+        cachedFetchJson<QuoteData>(`quotes/${normalizedLanguage}.json`),
+      );
+      if (error) {
+        if (
+          error instanceof Error &&
+          (error?.message?.includes("404") ||
+            error?.message?.includes("Content is not JSON"))
+        ) {
           return defaultQuoteCollection;
+        } else {
+          throw error;
         }
+      }
 
-        this.quoteCollection = {
-          quotes: [],
-          length: data.quotes.length,
-          groups: [],
+      if (data.quotes === undefined || data.quotes.length === 0) {
+        return defaultQuoteCollection;
+      }
+
+      this.quoteCollection = {
+        quotes: [],
+        length: data.quotes.length,
+        groups: [],
+        language: data.language,
+      };
+
+      // Transform JSON Quote schema to MonkeyTypes Quote schema
+      data.quotes.forEach((quote) => {
+        const monkeyTypeQuote: Quote = {
+          text: quote.text,
+          britishText: quote.britishText,
+          source: quote.source,
+          length: quote.length,
+          id: quote.id,
           language: data.language,
+          group: 0,
         };
 
-        // Transform JSON Quote schema to MonkeyTypes Quote schema
-        data.quotes.forEach((quote: JsonQuote) => {
-          const monkeyTypeQuote: MonkeyTypes.Quote = {
-            text: quote.text,
-            britishText: quote.britishText,
-            source: quote.source,
-            length: quote.length,
-            id: quote.id,
-            language: data.language,
-            group: 0,
-          };
+        this.quoteCollection.quotes.push(monkeyTypeQuote);
+      });
 
-          this.quoteCollection.quotes.push(monkeyTypeQuote);
-        });
+      data.groups.forEach((quoteGroup, groupIndex) => {
+        const lower = quoteGroup[0];
+        const upper = quoteGroup[1];
 
-        data.groups.forEach((quoteGroup, groupIndex) => {
-          const lower = quoteGroup[0];
-          const upper = quoteGroup[1];
+        this.quoteCollection.groups[groupIndex] =
+          this.quoteCollection.quotes.filter((quote) => {
+            if (quote.length >= lower && quote.length <= upper) {
+              quote.group = groupIndex;
+              return true;
+            }
+            return false;
+          });
+      });
 
-          this.quoteCollection.groups[groupIndex] =
-            this.quoteCollection.quotes.filter((quote) => {
-              if (quote.length >= lower && quote.length <= upper) {
-                quote.group = groupIndex;
-                return true;
-              }
-              return false;
-            });
-        });
-
-        if (quoteLengths !== undefined) {
-          this.updateQuoteQueue(quoteLengths);
-        }
-      } catch {
-        return defaultQuoteCollection;
+      if (quoteLengths !== undefined) {
+        this.updateQuoteQueue(quoteLengths);
       }
     }
 
     return this.quoteCollection;
   }
 
-  getQuoteById(id: number): MonkeyTypes.Quote | undefined {
-    const targetQuote = this.quoteCollection.quotes.find(
-      (quote: MonkeyTypes.Quote) => {
-        return quote.id === id;
-      }
-    );
+  getQuoteById(id: number): Quote | undefined {
+    const targetQuote = this.quoteCollection.quotes.find((quote: Quote) => {
+      return quote.id === id;
+    });
 
     return targetQuote;
   }
@@ -129,7 +131,7 @@ class QuotesController {
     this.queueIndex = 0;
   }
 
-  getRandomQuote(): MonkeyTypes.Quote | null {
+  getRandomQuote(): Quote | null {
     if (this.quoteQueue.length === 0) {
       return null;
     }
@@ -139,33 +141,29 @@ class QuotesController {
       shuffle(this.quoteQueue);
     }
 
-    const randomQuote = this.quoteQueue[this.queueIndex] as MonkeyTypes.Quote;
+    const randomQuote = this.quoteQueue[this.queueIndex] as Quote;
 
     this.queueIndex += 1;
 
     return randomQuote;
   }
 
-  getCurrentQuote(): MonkeyTypes.Quote | null {
-    if (this.quoteQueue.length === 0) {
-      return null;
-    }
-
-    return this.quoteQueue[this.queueIndex] as MonkeyTypes.Quote;
-  }
-
-  getRandomFavoriteQuote(language: string): MonkeyTypes.Quote | null {
+  getRandomFavoriteQuote(language: Language): Quote | null {
     const snapshot = DB.getSnapshot();
     if (!snapshot) {
       return null;
     }
 
-    const normalizedLanguage = normalizeLanguage(language);
+    const normalizedLanguage = removeLanguageSize(language);
     const quoteIds: string[] = [];
     const { favoriteQuotes } = snapshot;
 
-    Object.keys(favoriteQuotes).forEach((language) => {
-      if (normalizeLanguage(language) !== normalizedLanguage) {
+    if (favoriteQuotes === undefined) {
+      return null;
+    }
+
+    (Object.keys(favoriteQuotes) as Language[]).forEach((language) => {
+      if (removeLanguageSize(language) !== normalizedLanguage) {
         return;
       }
 
@@ -182,7 +180,7 @@ class QuotesController {
     return randomQuote ?? null;
   }
 
-  isQuoteFavorite({ language: quoteLanguage, id }: MonkeyTypes.Quote): boolean {
+  isQuoteFavorite({ language: quoteLanguage, id }: Quote): boolean {
     const snapshot = DB.getSnapshot();
     if (!snapshot) {
       return false;
@@ -190,22 +188,70 @@ class QuotesController {
 
     const { favoriteQuotes } = snapshot;
 
-    const normalizedQuoteLanguage = normalizeLanguage(quoteLanguage);
+    if (favoriteQuotes === undefined) {
+      return false;
+    }
 
-    const matchedLanguage = Object.keys(favoriteQuotes).find((language) => {
-      if (normalizedQuoteLanguage !== normalizeLanguage(language)) {
-        return false;
-      }
-      return (favoriteQuotes[language] ?? []).includes(id.toString());
-    });
+    const normalizedQuoteLanguage = removeLanguageSize(quoteLanguage);
+
+    const matchedLanguage = (Object.keys(favoriteQuotes) as Language[]).find(
+      (language) => {
+        if (normalizedQuoteLanguage !== removeLanguageSize(language)) {
+          return false;
+        }
+        return (favoriteQuotes[language] ?? []).includes(id.toString());
+      },
+    );
 
     return matchedLanguage !== undefined;
+  }
+
+  async setQuoteFavorite(quote: Quote, isFavorite: boolean): Promise<void> {
+    const snapshot = DB.getSnapshot();
+    if (!snapshot) {
+      throw new Error("Snapshot is not available");
+    }
+
+    if (!isFavorite) {
+      // Remove from favorites
+      const response = await Ape.users.removeQuoteFromFavorites({
+        body: {
+          language: quote.language,
+          quoteId: `${quote.id}`,
+        },
+      });
+
+      if (response.status === 200) {
+        const quoteIndex = snapshot.favoriteQuotes?.[quote.language]?.indexOf(
+          `${quote.id}`,
+        ) as number;
+        snapshot.favoriteQuotes?.[quote.language]?.splice(quoteIndex, 1);
+      } else {
+        throw new Error(response.body.message);
+      }
+    } else {
+      // Remove from favorites
+      const response = await Ape.users.addQuoteToFavorites({
+        body: {
+          language: quote.language,
+          quoteId: `${quote.id}`,
+        },
+      });
+
+      if (response.status === 200) {
+        snapshot.favoriteQuotes ??= {};
+        snapshot.favoriteQuotes[quote.language] ??= [];
+        snapshot.favoriteQuotes[quote.language]?.push(`${quote.id}`);
+      } else {
+        throw new Error(response.body.message);
+      }
+    }
   }
 }
 
 const quoteController = new QuotesController();
 
-subscribe((key, newValue) => {
+configEvent.subscribe(({ key, newValue }) => {
   if (key === "quoteLength") {
     quoteController.updateQuoteQueue(newValue as number[]);
   }

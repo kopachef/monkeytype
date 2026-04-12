@@ -1,30 +1,41 @@
-import _ from "lodash";
 import { randomBytes } from "crypto";
 import { hash } from "bcrypt";
 import * as ApeKeysDAL from "../../dal/ape-keys";
 import MonkeyError from "../../utils/error";
 import { MonkeyResponse } from "../../utils/monkey-response";
-import { base64UrlEncode } from "../../utils/misc";
+import { base64UrlEncode, omit } from "../../utils/misc";
 import { ObjectId } from "mongodb";
 
-function cleanApeKey(apeKey: MonkeyTypes.ApeKey): Partial<MonkeyTypes.ApeKey> {
-  return _.omit(apeKey, "hash", "_id", "uid", "useCount");
+import {
+  AddApeKeyRequest,
+  AddApeKeyResponse,
+  ApeKeyParams,
+  EditApeKeyRequest,
+  GetApeKeyResponse,
+} from "@monkeytype/contracts/ape-keys";
+import { ApeKey } from "@monkeytype/schemas/ape-keys";
+import { MonkeyRequest } from "../types";
+
+function cleanApeKey(apeKey: ApeKeysDAL.DBApeKey): ApeKey {
+  return omit(apeKey, ["hash", "_id", "uid", "useCount"]);
 }
 
 export async function getApeKeys(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+  req: MonkeyRequest,
+): Promise<GetApeKeyResponse> {
   const { uid } = req.ctx.decodedToken;
 
   const apeKeys = await ApeKeysDAL.getApeKeys(uid);
-  const cleanedKeys = _(apeKeys).keyBy("_id").mapValues(cleanApeKey).value();
+  const cleanedKeys: Record<string, ApeKey> = Object.fromEntries(
+    apeKeys.map((item) => [item._id.toHexString(), cleanApeKey(item)]),
+  );
 
   return new MonkeyResponse("ApeKeys retrieved", cleanedKeys);
 }
 
 export async function generateApeKey(
-  req: MonkeyTypes.Request
-): Promise<MonkeyResponse> {
+  req: MonkeyRequest<undefined, AddApeKeyRequest>,
+): Promise<AddApeKeyResponse> {
   const { name, enabled } = req.body;
   const { uid } = req.ctx.decodedToken;
   const { maxKeysPerUser, apeKeyBytes, apeKeySaltRounds } =
@@ -39,7 +50,7 @@ export async function generateApeKey(
   const apiKey = randomBytes(apeKeyBytes).toString("base64url");
   const saltyHash = await hash(apiKey, apeKeySaltRounds);
 
-  const apeKey: MonkeyTypes.ApeKey = {
+  const apeKey: ApeKeysDAL.DBApeKey = {
     _id: new ObjectId(),
     name,
     enabled,
@@ -61,24 +72,24 @@ export async function generateApeKey(
 }
 
 export async function editApeKey(
-  req: MonkeyTypes.Request
+  req: MonkeyRequest<undefined, EditApeKeyRequest, ApeKeyParams>,
 ): Promise<MonkeyResponse> {
   const { apeKeyId } = req.params;
   const { name, enabled } = req.body;
   const { uid } = req.ctx.decodedToken;
 
-  await ApeKeysDAL.editApeKey(uid, apeKeyId as string, name, enabled);
+  await ApeKeysDAL.editApeKey(uid, apeKeyId, name, enabled);
 
-  return new MonkeyResponse("ApeKey updated");
+  return new MonkeyResponse("ApeKey updated", null);
 }
 
 export async function deleteApeKey(
-  req: MonkeyTypes.Request
+  req: MonkeyRequest<undefined, undefined, ApeKeyParams>,
 ): Promise<MonkeyResponse> {
   const { apeKeyId } = req.params;
   const { uid } = req.ctx.decodedToken;
 
-  await ApeKeysDAL.deleteApeKey(uid, apeKeyId as string);
+  await ApeKeysDAL.deleteApeKey(uid, apeKeyId);
 
-  return new MonkeyResponse("ApeKey deleted");
+  return new MonkeyResponse("ApeKey deleted", null);
 }

@@ -5,7 +5,7 @@ import { setQueueLength } from "../utils/prometheus";
 const CRON_SCHEDULE = "0 */5 * * * *";
 
 async function main(): Promise<void> {
-  Promise.all(
+  await Promise.all(
     Queues.map(async (queue) => {
       const counts = await queue.getJobCounts();
 
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
       setQueueLength(queue.queueName, "active", active);
       setQueueLength(queue.queueName, "failed", failed);
       setQueueLength(queue.queueName, "waiting", waitingTotal);
-    })
+    }),
   );
 }
 

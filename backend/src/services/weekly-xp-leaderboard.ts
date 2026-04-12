@@ -1,28 +1,21 @@
+import { Configuration } from "@monkeytype/schemas/configuration";
 import * as RedisClient from "../init/redis";
 import LaterQueue from "../queues/later-queue";
-import { getCurrentWeekTimestamp } from "../utils/misc";
+import {
+  RedisXpLeaderboardEntry,
+  RedisXpLeaderboardEntrySchema,
+  RedisXpLeaderboardScore,
+  XpLeaderboardEntry,
+} from "@monkeytype/schemas/leaderboards";
+import { getCurrentWeekTimestamp } from "@monkeytype/util/date-and-time";
+import MonkeyError from "../utils/error";
+import { parseWithSchema as parseJsonWithSchema } from "@monkeytype/util/json";
+import { omit } from "../utils/misc";
 
-interface InternalWeeklyXpLeaderboardEntry {
-  uid: string;
-  name: string;
-  discordAvatar?: string;
-  discordId?: string;
-  badgeId?: number;
-  lastActivityTimestamp: number;
-}
-
-interface WeeklyXpLeaderboardEntry extends InternalWeeklyXpLeaderboardEntry {
-  totalXp: number;
-  rank: number;
-  count?: number;
-  timeTypedSeconds: number;
-}
-
-interface AddResultOpts {
-  entry: InternalWeeklyXpLeaderboardEntry;
-  xpGained: number;
-  timeTypedSeconds: number;
-}
+export type AddResultOpts = {
+  entry: RedisXpLeaderboardEntry;
+  xpGained: RedisXpLeaderboardScore;
+};
 
 const weeklyXpLeaderboardLeaderboardNamespace =
   "monkeytype:weekly-xp-leaderboard";
@@ -59,10 +52,10 @@ export class WeeklyXpLeaderboard {
   }
 
   public async addResult(
-    weeklyXpLeaderboardConfig: SharedTypes.Configuration["leaderboards"]["weeklyXp"],
-    opts: AddResultOpts
+    weeklyXpLeaderboardConfig: Configuration["leaderboards"]["weeklyXp"],
+    opts: AddResultOpts,
   ): Promise<number> {
-    const { entry, xpGained, timeTypedSeconds } = opts;
+    const { entry, xpGained } = opts;
 
     const connection = RedisClient.getConnection();
     if (!connection || !weeklyXpLeaderboardConfig.enabled) {
@@ -82,19 +75,24 @@ export class WeeklyXpLeaderboard {
     const weeklyXpLeaderboardExpirationTimeInSeconds = Math.floor(
       (currentWeekTimestamp +
         weeklyXpLeaderboardExpirationDurationInMilliseconds) /
-        1000
+        1000,
     );
 
     const currentEntry = await connection.hget(
       weeklyXpLeaderboardResultsKey,
-      entry.uid
+      entry.uid,
     );
-    const totalTimeTypedSeconds =
-      timeTypedSeconds +
-      ((currentEntry && JSON.parse(currentEntry)?.timeTypedSeconds) || 0);
 
-    const [rank]: [number, void] = await Promise.all([
-      // @ts-ignore
+    const currentEntryTimeTypedSeconds =
+      currentEntry !== null
+        ? parseJsonWithSchema(currentEntry, RedisXpLeaderboardEntrySchema)
+            ?.timeTypedSeconds
+        : undefined;
+
+    const totalTimeTypedSeconds =
+      entry.timeTypedSeconds + (currentEntryTimeTypedSeconds ?? 0);
+
+    const [rank] = await Promise.all([
       connection.addResultIncrement(
         2,
         weeklyXpLeaderboardScoresKey,
@@ -102,11 +100,16 @@ export class WeeklyXpLeaderboard {
         weeklyXpLeaderboardExpirationTimeInSeconds,
         entry.uid,
         xpGained,
-        JSON.stringify({ ...entry, timeTypedSeconds: totalTimeTypedSeconds })
+        JSON.stringify(
+          RedisXpLeaderboardEntrySchema.parse({
+            ...entry,
+            timeTypedSeconds: totalTimeTypedSeconds,
+          }),
+        ),
       ),
       LaterQueue.scheduleForNextWeek(
         "weekly-xp-leaderboard-results",
-        "weekly-xp"
+        "weekly-xp",
       ),
     ]);
 
@@ -114,90 +117,146 @@ export class WeeklyXpLeaderboard {
   }
 
   public async getResults(
-    minRank: number,
-    maxRank: number,
-    weeklyXpLeaderboardConfig: SharedTypes.Configuration["leaderboards"]["weeklyXp"]
-  ): Promise<WeeklyXpLeaderboardEntry[]> {
+    page: number,
+    pageSize: number,
+    weeklyXpLeaderboardConfig: Configuration["leaderboards"]["weeklyXp"],
+    premiumFeaturesEnabled: boolean,
+    userIds?: string[],
+  ): Promise<{
+    entries: XpLeaderboardEntry[];
+    count: number;
+  } | null> {
     const connection = RedisClient.getConnection();
     if (!connection || !weeklyXpLeaderboardConfig.enabled) {
-      return [];
+      return null;
     }
+
+    if (page < 0 || pageSize < 0) {
+      throw new MonkeyError(500, "Invalid page or pageSize");
+    }
+
+    if (userIds?.length === 0) {
+      return { entries: [], count: 0 };
+    }
+
+    const isFriends = userIds !== undefined;
+    const minRank = page * pageSize;
+    const maxRank = minRank + pageSize - 1;
 
     const { weeklyXpLeaderboardScoresKey, weeklyXpLeaderboardResultsKey } =
       this.getThisWeeksXpLeaderboardKeys();
 
-    // @ts-ignore
-    const [results, scores]: string[][] = await connection.getResults(
-      2, // How many of the arguments are redis keys (https://redis.io/docs/manual/programmability/lua-api/)
+    const [results, scores, count, _, ranks] = await connection.getResults(
+      2,
       weeklyXpLeaderboardScoresKey,
       weeklyXpLeaderboardResultsKey,
       minRank,
       maxRank,
-      "true"
+      "true",
+      userIds?.join(",") ?? "",
     );
 
     if (results === undefined) {
       throw new Error(
-        "Redis returned undefined when getting weekly leaderboard results"
+        "Redis returned undefined when getting weekly leaderboard results",
       );
     }
 
     if (scores === undefined) {
       throw new Error(
-        "Redis returned undefined when getting weekly leaderboard scores"
+        "Redis returned undefined when getting weekly leaderboard scores",
       );
     }
 
-    const resultsWithRanks: WeeklyXpLeaderboardEntry[] = results.map(
-      (resultJSON: string, index: number) => ({
-        ...JSON.parse(resultJSON),
-        rank: minRank + index + 1,
-        totalXp: parseInt(scores[index] as string, 10),
-      })
+    let resultsWithRanks: XpLeaderboardEntry[] = results.map(
+      (resultJSON: string, index: number) => {
+        try {
+          const parsed = parseJsonWithSchema(
+            resultJSON,
+            RedisXpLeaderboardEntrySchema,
+          );
+          const scoreValue = scores[index];
+
+          if (typeof scoreValue !== "string") {
+            throw new Error(
+              `Invalid score value at index ${index}: ${scoreValue}`,
+            );
+          }
+
+          return {
+            ...parsed,
+            rank: isFriends
+              ? new Number(ranks[index]).valueOf() + 1
+              : minRank + index + 1,
+            friendsRank: isFriends ? minRank + index + 1 : undefined,
+            totalXp: parseInt(scoreValue, 10),
+          };
+        } catch (error) {
+          throw new Error(
+            `Failed to parse leaderboard entry at index ${index}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      },
     );
 
-    return resultsWithRanks;
+    if (!premiumFeaturesEnabled) {
+      resultsWithRanks = resultsWithRanks.map((it) => omit(it, ["isPremium"]));
+    }
+
+    return { entries: resultsWithRanks, count: parseInt(count) };
   }
 
   public async getRank(
     uid: string,
-    weeklyXpLeaderboardConfig: SharedTypes.Configuration["leaderboards"]["weeklyXp"]
-  ): Promise<WeeklyXpLeaderboardEntry | null> {
+    weeklyXpLeaderboardConfig: Configuration["leaderboards"]["weeklyXp"],
+    userIds?: string[],
+  ): Promise<XpLeaderboardEntry | null> {
     const connection = RedisClient.getConnection();
     if (!connection || !weeklyXpLeaderboardConfig.enabled) {
+      throw new Error("Redis connection is unavailable");
+    }
+    if (userIds?.length === 0) {
       return null;
     }
 
     const { weeklyXpLeaderboardScoresKey, weeklyXpLeaderboardResultsKey } =
       this.getThisWeeksXpLeaderboardKeys();
 
-    connection.set;
+    const [rank, score, result, friendsRank] = await connection.getRank(
+      2,
+      weeklyXpLeaderboardScoresKey,
+      weeklyXpLeaderboardResultsKey,
+      uid,
+      "true",
+      userIds?.join(",") ?? "",
+    );
 
-    // @ts-ignore
-    const [[, rank], [, totalXp], [, count], [, result]] = await connection
-      .multi()
-      .zrevrank(weeklyXpLeaderboardScoresKey, uid)
-      .zscore(weeklyXpLeaderboardScoresKey, uid)
-      .zcard(weeklyXpLeaderboardScoresKey)
-      .hget(weeklyXpLeaderboardResultsKey, uid)
-      .exec();
-
-    if (rank === null) {
+    if (rank === null || result === null) {
       return null;
     }
 
-    return {
-      rank: rank + 1,
-      count: count ?? 0,
-      totalXp: parseInt(totalXp, 10),
-      ...JSON.parse(result ?? "null"),
-    };
+    try {
+      return {
+        ...parseJsonWithSchema(result ?? "null", RedisXpLeaderboardEntrySchema),
+        rank: rank + 1,
+        friendsRank: friendsRank !== undefined ? friendsRank + 1 : undefined,
+        totalXp: parseInt(score, 10),
+      };
+    } catch (error) {
+      throw new Error(
+        `Failed to parse leaderboard entry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 }
 
 export function get(
-  weeklyXpLeaderboardConfig: SharedTypes.Configuration["leaderboards"]["weeklyXp"],
-  customTimestamp?: number
+  weeklyXpLeaderboardConfig: Configuration["leaderboards"]["weeklyXp"],
+  customTimestamp?: number,
 ): WeeklyXpLeaderboard | null {
   const { enabled } = weeklyXpLeaderboardConfig;
 
@@ -207,3 +266,23 @@ export function get(
 
   return new WeeklyXpLeaderboard(customTimestamp);
 }
+
+export async function purgeUserFromXpLeaderboards(
+  uid: string,
+  weeklyXpLeaderboardConfig: Configuration["leaderboards"]["weeklyXp"],
+): Promise<void> {
+  const connection = RedisClient.getConnection();
+  if (!connection || !weeklyXpLeaderboardConfig.enabled) {
+    return;
+  }
+
+  await connection.purgeResults(
+    0,
+    uid,
+    weeklyXpLeaderboardLeaderboardNamespace,
+  );
+}
+
+export const __testing = {
+  namespace: weeklyXpLeaderboardLeaderboardNamespace,
+};

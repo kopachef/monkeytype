@@ -1,50 +1,53 @@
 import { navigate } from "../../controllers/route-controller";
+import { isAuthenticated } from "../../states/core";
 import { toggleFullscreen } from "../../utils/misc";
+import { Command } from "../types";
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "viewTypingPage",
     display: "View Typing Page",
-    alias: "start begin type test",
+    alias: "navigate go to start begin type test",
     icon: "fa-keyboard",
     exec: (): void => {
-      navigate("/");
+      void navigate("/");
     },
   },
   {
     id: "viewLeaderboards",
     display: "View Leaderboards",
+    alias: "navigate go to",
     icon: "fa-crown",
     exec: (): void => {
-      $("header nav .textButton.view-leaderboards").trigger("click");
+      void navigate("/leaderboards");
     },
   },
   {
     id: "viewAbout",
     display: "View About Page",
+    alias: "navigate go to",
     icon: "fa-info",
     exec: (): void => {
-      navigate("/about");
+      void navigate("/about");
     },
   },
   {
     id: "viewSettings",
     display: "View Settings Page",
+    alias: "navigate go to",
     icon: "fa-cog",
     exec: (): void => {
-      navigate("/settings");
+      void navigate("/settings");
     },
   },
 
   {
     id: "viewAccount",
     display: "View Account Page",
+    alias: "navigate go to stats",
     icon: "fa-user",
-    alias: "stats",
     exec: (): void => {
-      $("header nav .textButton.view-account").hasClass("hidden")
-        ? navigate("/login")
-        : navigate("/account");
+      isAuthenticated() ? void navigate("/account") : void navigate("/login");
     },
   },
   {
