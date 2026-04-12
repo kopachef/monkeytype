@@ -487,7 +487,7 @@ export function reloadAfter(seconds: number): void {
 }
 
 export function updateTitle(title?: string): void {
-  const local = isDevEnvironment() ? "localhost - " : "";
+  const local = isDevEnvironment() ? "martinnn.com - " : "";
 
   if (title === undefined || title === "") {
     document.title =
