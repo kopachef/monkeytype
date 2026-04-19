@@ -166,6 +166,9 @@ export async function onInsertText(options: OnInsertTextParams): Promise<void> {
   Replay.addReplayEvent(correct ? "correctLetter" : "incorrectLetter", data);
   TestInput.incrementAccuracy(correct);
   WeakSpot.updateScore(data, correct);
+  // This follows Weakspot's pattern of learning in the background. If that cost
+  // becomes too high, this can be gated behind
+  // `Config.funbox.includes("bigram_crunch")` so it only learns while active.
   BigramCrunch.updateBigramScore(currentWord, testInput, correct);
   TestInput.incrementKeypressCount();
   TestInput.pushKeypressWord(wordIndex);

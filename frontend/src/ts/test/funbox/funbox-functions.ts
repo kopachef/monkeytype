@@ -47,6 +47,7 @@ export type FunboxFunctions = {
   handleKeydown?: (event: KeyboardEvent) => Promise<void>;
   getResultContent?: () => string;
   start?: () => void;
+  finish?: () => void;
   restart?: () => void;
   getWordHtml?: (char: string, letterTag?: boolean) => string;
   getWordsFrequencyMode?: () => FunboxWordsFrequency;
@@ -557,6 +558,12 @@ const list: Partial<Record<FunboxName, FunboxFunctions>> = {
     getWord(wordset?: Wordset): string {
       if (wordset !== undefined) return BigramCrunch.getWord(wordset);
       else return "";
+    },
+    start(): void {
+      BigramCrunch.logSessionStart();
+    },
+    finish(): void {
+      BigramCrunch.logSessionEnd();
     },
   },
   pseudolang: {

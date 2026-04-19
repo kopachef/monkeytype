@@ -28,7 +28,7 @@ onDOMReady(async () => {
 
   MonkeyPower.init();
 
-  if (isDevEnvironment()) {
+  if (isDevEnvironment() && "serviceWorker" in navigator) {
     void navigator.serviceWorker
       .getRegistrations()
       .then(function (registrations) {

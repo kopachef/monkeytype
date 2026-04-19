@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { LocalStorageWithSchema } from "./local-storage-with-schema";
-import { isDevEnvironment } from "./env";
 
 const nativeLog = console.log;
 const nativeWarn = console.warn;
@@ -13,11 +12,6 @@ const debugLogsLS = new LocalStorageWithSchema({
 });
 
 let debugLogs = debugLogsLS.get();
-
-if (isDevEnvironment()) {
-  debugLogs = true;
-  debug("Debug logs automatically enabled on localhost");
-}
 
 export function toggleDebugLogs(): void {
   debugLogs = !debugLogs;

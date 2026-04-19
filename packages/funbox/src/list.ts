@@ -323,7 +323,7 @@ const list: Record<FunboxName, FunboxMetadata> = {
     name: "weakspot",
   },
   bigram_crunch: {
-    description: "Focus on mistyped character bigrams.",
+    description: "Focus on slow and mistyped letter pairs.",
     canGetPb: false,
     difficultyLevel: 0,
     properties: ["changesWordsFrequency"],

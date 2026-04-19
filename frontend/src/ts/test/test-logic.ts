@@ -1016,6 +1016,10 @@ export async function finish(difficultyFailed = false): Promise<void> {
 
   ///////// completed event ready
 
+  for (const fb of getActiveFunboxesWithFunction("finish")) {
+    fb.functions.finish();
+  }
+
   //afk check
   const kps = TestInput.afkHistory.slice(-5);
   let afkDetected = kps.length > 0 && kps.every((afk) => afk);

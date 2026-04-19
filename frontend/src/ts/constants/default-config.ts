@@ -39,7 +39,7 @@ const obj: Config = {
   paceCaretStyle: "default",
   flipTestColors: false,
   layout: "default",
-  funbox: ["bigram_crunch"],
+  funbox: [],
   confidenceMode: "off",
   indicateTypos: "off",
   compositionDisplay: "replace",
