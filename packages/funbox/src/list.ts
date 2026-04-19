@@ -326,7 +326,7 @@ const list: Record<FunboxName, FunboxMetadata> = {
     description: "Focus on slow and mistyped letter pairs.",
     canGetPb: false,
     difficultyLevel: 0,
-    properties: ["changesWordsFrequency"],
+    properties: ["changesWordsFrequency", "toPush:20"],
     frontendFunctions: ["getWord"],
     name: "bigram_crunch",
   },

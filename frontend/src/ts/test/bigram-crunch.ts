@@ -25,7 +25,11 @@ const saveEveryUpdates = 10;
 // Longer write-up: https://martinnn.com/blog/bigram-crunch/
 const scoringConfig = {
   confidenceAttempts: 10,
-  timingBaselineMs: 180,
+  fallbackTimingBaselineMs: 120,
+  adaptiveTimingMinSamples: 150,
+  minAdaptiveTimingBaselineMs: 50,
+  maxAdaptiveTimingBaselineMs: 180,
+  timingBaselineWindow: 200,
   minTimingMs: 20,
   // Treat timings beyond this as pauses/outliers and skip the whole bigram
   // update so distracted breaks do not count as attempts or misses.
@@ -51,9 +55,17 @@ const BigramStatsSchema = z
   })
   .strict();
 
+const TimingBaselineSchema = z
+  .object({
+    averageMs: z.number().nonnegative(),
+    samples: z.number().int().nonnegative(),
+  })
+  .strict();
+
 const BigramCrunchStorageSchema = z
   .object({
     version: z.literal(1),
+    timingBaseline: TimingBaselineSchema,
     bigrams: z.record(
       z.string().regex(supportedBigramRegex),
       BigramStatsSchema,
@@ -86,6 +98,10 @@ type BigramSpacing = {
   spacing: number | undefined;
   shouldSkip: boolean;
 };
+type WordCandidate = {
+  word: string;
+  score: number;
+};
 
 const storage = new LocalStorageWithSchema<BigramCrunchStorage>({
   key: "bigramCrunchStats",
@@ -104,7 +120,15 @@ const recentWords: string[] = [];
 function createEmptyStorage(): BigramCrunchStorage {
   return {
     version: 1,
+    timingBaseline: createEmptyTimingBaseline(),
     bigrams: {},
+  };
+}
+
+function createEmptyTimingBaseline(): BigramCrunchStorage["timingBaseline"] {
+  return {
+    averageMs: 0,
+    samples: 0,
   };
 }
 
@@ -276,25 +300,65 @@ function updateMovingAverage(
   currentAverage: number,
   nextValue: number,
   previousAttempts: number,
+  averageWindow = movingAverageWindow,
 ): number {
   if (previousAttempts === 0 || currentAverage === 0) {
     return nextValue;
   }
 
-  const count = Math.min(previousAttempts + 1, movingAverageWindow);
+  const count = Math.min(previousAttempts + 1, averageWindow);
   const adjustRate = 1 / count;
   return nextValue * adjustRate + currentAverage * (1 - adjustRate);
 }
 
-function calculateScore(stats: BigramStats): number {
+function updateTimingBaseline(
+  storage: BigramCrunchStorage,
+  spacing: number,
+): void {
+  const previousSamples = storage.timingBaseline.samples;
+  storage.timingBaseline.averageMs = updateMovingAverage(
+    storage.timingBaseline.averageMs,
+    spacing,
+    previousSamples,
+    scoringConfig.timingBaselineWindow,
+  );
+  storage.timingBaseline.samples++;
+}
+
+function getActiveTimingBaselineMs(storage: BigramCrunchStorage): number {
+  const baseline =
+    storage.timingBaseline.samples >= scoringConfig.adaptiveTimingMinSamples
+      ? storage.timingBaseline.averageMs
+      : scoringConfig.fallbackTimingBaselineMs;
+
+  return Math.min(
+    scoringConfig.maxAdaptiveTimingBaselineMs,
+    Math.max(scoringConfig.minAdaptiveTimingBaselineMs, baseline),
+  );
+}
+
+function getTimingBaselineForDebug(
+  storage: BigramCrunchStorage,
+): BigramCrunchStorage["timingBaseline"] & {
+  activeMs: number;
+  isAdaptive: boolean;
+} {
+  return {
+    ...storage.timingBaseline,
+    activeMs: getActiveTimingBaselineMs(storage),
+    isAdaptive:
+      storage.timingBaseline.samples >= scoringConfig.adaptiveTimingMinSamples,
+  };
+}
+
+function calculateScore(stats: BigramStats, timingBaselineMs: number): number {
   if (stats.attempts === 0) return 0;
 
   const missRate = stats.misses / stats.attempts;
   // A few early mistakes should not dominate forever; confidence lets the score
   // ramp up as the bigram gets enough attempts to be meaningful.
   const timingPenalty = Math.min(
-    Math.max(0, stats.averageMs - scoringConfig.timingBaselineMs) /
-      scoringConfig.timingBaselineMs,
+    Math.max(0, stats.averageMs - timingBaselineMs) / timingBaselineMs,
     2,
   );
   const confidence = Math.min(
@@ -307,6 +371,13 @@ function calculateScore(stats: BigramStats): number {
     (missRate * scoringConfig.missRateWeight +
       timingPenalty * scoringConfig.timingWeight)
   );
+}
+
+function refreshScores(storage: BigramCrunchStorage): void {
+  const timingBaselineMs = getActiveTimingBaselineMs(storage);
+  for (const stats of Object.values(storage.bigrams)) {
+    stats.score = calculateScore(stats, timingBaselineMs);
+  }
 }
 
 function scoreWord(word: string): number {
@@ -322,8 +393,8 @@ function scoreWord(word: string): number {
 }
 
 function weightedChoice(
-  candidates: { word: string; score: number }[],
-): string | undefined {
+  candidates: WordCandidate[],
+): WordCandidate | undefined {
   const totalScore = candidates.reduce(
     (total, candidate) => total + candidate.score,
     0,
@@ -334,11 +405,11 @@ function weightedChoice(
   for (const candidate of candidates) {
     target -= candidate.score;
     if (target <= 0) {
-      return candidate.word;
+      return candidate;
     }
   }
 
-  return candidates[candidates.length - 1]?.word;
+  return candidates[candidates.length - 1];
 }
 
 function rememberWord(word: string): void {
@@ -385,13 +456,14 @@ export function updateBigramScore(
     bigramStats.misses++;
   }
   if (spacing !== undefined) {
+    updateTimingBaseline(stats, spacing);
     bigramStats.averageMs = updateMovingAverage(
       bigramStats.averageMs,
       spacing,
       previousAttempts,
     );
   }
-  bigramStats.score = calculateScore(bigramStats);
+  refreshScores(stats);
   bigramStats.lastSeen = Date.now();
 
   if (debugLogging) {
@@ -399,6 +471,7 @@ export function updateBigramScore(
       bigram,
       isCorrect,
       spacing,
+      timingBaseline: getTimingBaselineForDebug(stats),
       ...bigramStats,
     });
   }
@@ -412,18 +485,33 @@ export function getWord(wordset: Wordset): string {
 
   const currentSupport = getSupportStatus(wordset);
   if (!currentSupport.supported) {
+    if (debugLogging) {
+      console.log("Bigram Crunch word selection fallback", {
+        reason: "unsupported-language",
+        supportStatus: currentSupport,
+      });
+    }
     return chooseRandomWord(wordset);
   }
 
   // Keep a small amount of random exploration so the selector can still
   // discover weak bigrams it has not scored highly yet.
   if (Math.random() < scoringConfig.explorationRate) {
+    if (debugLogging) {
+      console.log("Bigram Crunch word selection fallback", {
+        reason: "exploration",
+        explorationRate: scoringConfig.explorationRate,
+      });
+    }
     return chooseRandomWord(wordset);
   }
 
   const index = getWordCandidateIndex(wordset);
   const candidateWords = new Set<string>();
-  for (const { bigram } of getTopBigrams(topScoredBigramCount)) {
+  const topBigrams = getTopBigrams(topScoredBigramCount).filter(
+    ({ score }) => score > 0,
+  );
+  for (const { bigram } of topBigrams) {
     const words = index.bigramToWords.get(bigram);
     if (words === undefined) continue;
     for (const word of words) {
@@ -443,24 +531,45 @@ export function getWord(wordset: Wordset): string {
     .sort((a, b) => b.score - a.score)
     .slice(0, topCandidateCount);
 
+  const fallbackCandidates =
+    candidates.length > 0
+      ? []
+      : [...candidateWords]
+          .map((word) => ({
+            word,
+            score: scoreWord(word),
+          }))
+          .filter((candidate) => candidate.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, topCandidateCount);
+
   const selectedWord =
-    weightedChoice(candidates) ??
-    weightedChoice(
-      [...candidateWords]
-        .map((word) => ({
-          word,
-          score: scoreWord(word),
-        }))
-        .filter((candidate) => candidate.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topCandidateCount),
-    );
+    weightedChoice(candidates) ?? weightedChoice(fallbackCandidates);
 
   if (selectedWord !== undefined) {
-    rememberWord(selectedWord);
-    return selectedWord;
+    if (debugLogging) {
+      console.log("Bigram Crunch word selection", {
+        selectedWord: selectedWord.word,
+        selectedScore: selectedWord.score,
+        topBigrams,
+        candidatePoolSize: candidateWords.size,
+        candidates,
+        fallbackCandidates,
+        recentWords: [...recentWords],
+      });
+    }
+    rememberWord(selectedWord.word);
+    return selectedWord.word;
   }
 
+  if (debugLogging) {
+    console.log("Bigram Crunch word selection fallback", {
+      reason:
+        topBigrams.length === 0 ? "no-scored-bigrams" : "no-scored-candidates",
+      topBigrams,
+      candidatePoolSize: candidateWords.size,
+    });
+  }
   return chooseRandomWord(wordset);
 }
 
@@ -471,9 +580,11 @@ export function getTopBigrams(limit = 20): RankedBigram[] {
 }
 
 export function getAllBigrams(): RankedBigram[] {
+  const stats = getStats();
+  refreshScores(stats);
   persistStats(true);
 
-  return Object.entries(getStats().bigrams)
+  return Object.entries(stats.bigrams)
     .map(([bigram, stats]) => ({
       bigram,
       ...stats,
@@ -519,6 +630,7 @@ export function logSessionStart(): boolean {
   console.log(message, {
     language: Config.language,
     scoringConfig,
+    timingBaseline: getTimingBaselineForDebug(stats),
     bigramCount,
     supported: currentSupportStatus?.supported ?? "unknown",
     disabledReason: currentSupportStatus?.reason,
