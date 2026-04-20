@@ -32,11 +32,12 @@ Here's where you can check it out: [here](https://typing.martinnn.com/).
 
 Just a note on why this version exists!
 
---
-Update: 2 years later.
+---
+**Update: 2 years later**
+
 I’ve had a version of Bigram Crunch running on my VPS for quite some time and have made several changes to its implementation, mainly based on learnings from using it over an extended period. I’m quite happy with the current version, and I think this might be the final iteration. I’ve also written a blog post on the most interesting parts - the word sampling and scoring sections. You can find it here: [https://martinnn.com/blog/bigram-crunch/](https://martinnn.com/blog/bigram-crunch/)
 
-
+---
 # Features
 
 - minimalistic design, with optional advertisements and focus mode while typing
