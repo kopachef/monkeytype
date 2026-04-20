@@ -23,7 +23,7 @@
 
 # About
 
-### Note(khoisan25): Fork of monkeytype(see source repo).
+### Note(kopachef): Fork of monkeytype(see source repo).
 I've initiated this project as a fork of Monkeytype, driven by a particular fascination with the "weakpoint" mode. Noticed my typing mistakes often came down to certain pairs of characters - bigrams. Thought it'd be cool to have a mode that focuses on those, making practice more targeted. So, I made one. It samples words based on the bigrams you struggle with. 
 
 Here's where you can check it out: [here](https://typing.martinnn.com/).
@@ -31,6 +31,11 @@ Here's where you can check it out: [here](https://typing.martinnn.com/).
 [settings -> behaviour -> funbox -> bigram_crunch]
 
 Just a note on why this version exists!
+
+--
+Update: 2 years later.
+I’ve had a version of Bigram Crunch running on my VPS for quite some time and have made several changes to its implementation, mainly based on learnings from using it over an extended period. I’m quite happy with the current version, and I think this might be the final iteration. I’ve also written a blog post on the most interesting parts - the word sampling and scoring sections. You can find it here: [https://martinnn.com/blog/bigram-crunch/](https://martinnn.com/blog/bigram-crunch/)
+
 
 # Features
 
